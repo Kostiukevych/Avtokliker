@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">AutoClicker</string>
+    <string name="accessibility_service_description">Служба специальных возможностей AutoClicker для выполнения автоматических нажатий по заданным координатам.</string>
+    <string name="notification_channel_name">AutoClicker Service</string>
+    <string name="notification_channel_desc">Фоновый сервис для непрерывного выполнения циклов кликов</string>
+    <string name="action_start">START</string>
+    <string name="action_stop">STOP</string>
+    <string name="action_show_overlay">Открыть оверлей</string>
+    <string name="action_hide_overlay">Закрыть оверлей</string>
+    <string name="enable_accessibility">Включить Accessibility</string>
+    <string name="enable_overlay">Включить Overlay</string>
+    <string name="status_running">RUNNING</string>
+    <string name="status_stopped">STOPPED</string>
+    <string name="status_waiting">WAITING</string>
+</resources>
