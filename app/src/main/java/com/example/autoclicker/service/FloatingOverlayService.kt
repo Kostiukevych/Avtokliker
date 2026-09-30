@@ -1,7 +1,7 @@
 package com.example.autoclicker.service
 
 import android.annotation.SuppressLint
-import android.app.Service
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
@@ -11,6 +11,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.IBinder
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -56,6 +57,7 @@ import kotlin.math.abs
  *    - Кнопка «Показать/скрыть точки».
  *    - Предупреждение о перекрытии точек панелью.
  *    - Строка последнего нажатия с результатом.
+ *    - Кнопка «Закрыть AutoClicker» в аварийном меню.
  * 3. Реализует TapHooks (beforeTap / afterTap) для временного снятия касаний и показа анимации.
  */
 class FloatingOverlayService : Service(), TapHooks {
@@ -126,11 +128,21 @@ class FloatingOverlayService : Service(), TapHooks {
         return START_STICKY
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        shutdownAllWindowsAndServices()
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        shutdownAllWindowsAndServices()
         super.onDestroy()
+    }
+
+    private fun shutdownAllWindowsAndServices() {
         cycleController.tapHooks = null
+        cycleController.stop()
         activeCalibrationView?.dismiss()
         activeCalibrationView = null
         visualOverlay?.cancelAnimations()
@@ -138,6 +150,10 @@ class FloatingOverlayService : Service(), TapHooks {
         visualOverlay = null
         removeOverlay()
         serviceScope.cancel()
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } catch (_: Exception) {}
+        stopSelf()
         EventLogManager.log(EventLogManager.TAG_OVERLAY, "FloatingOverlayService остановлен")
     }
 
@@ -257,6 +273,17 @@ class FloatingOverlayService : Service(), TapHooks {
         }
     }
 
+    private fun showCloseAutoClickerDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Закрыть AutoClicker")
+            .setPositiveButton("Закрыть") { _, _ ->
+                shutdownAllWindowsAndServices()
+                AutoClickForegroundService.stop(applicationContext)
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     private fun createMinimizedBadge() {
         floatingBadgeButton = Button(this).apply {
@@ -269,12 +296,16 @@ class FloatingOverlayService : Service(), TapHooks {
             gravity = Gravity.CENTER
             elevation = dpToPx(8).toFloat()
 
-            // Перемещение пальцем с запоминанием координат
             var initialX = 0
             var initialY = 0
             var initialTouchX = 0f
             var initialTouchY = 0f
             var isClick = false
+
+            setOnLongClickListener {
+                showCloseAutoClickerDialog()
+                true
+            }
 
             setOnTouchListener { _, event ->
                 val params = overlayParams ?: return@setOnTouchListener false
@@ -384,7 +415,8 @@ class FloatingOverlayService : Service(), TapHooks {
             layoutParams = lp
             setPadding(0, 0, 0, 0)
             setOnClickListener {
-                stopSelf()
+                shutdownAllWindowsAndServices()
+                AutoClickForegroundService.stop(applicationContext)
             }
         }
 
@@ -762,12 +794,19 @@ class FloatingOverlayService : Service(), TapHooks {
             },
             onDismissed = {
                 activeCalibrationView = null
-                // После выхода из калибровки открываем панель обратно
                 setMode(minimized = false)
+                floatingBadgeButton.visibility = View.VISIBLE
             }
         )
         activeCalibrationView = cal
         cal.show()
+
+        serviceScope.launch {
+            delay(60_000L)
+            if (activeCalibrationView === cal) {
+                cal.dismiss()
+            }
+        }
     }
 
     private fun refreshPointsUi() {
