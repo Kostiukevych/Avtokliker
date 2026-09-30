@@ -36,6 +36,7 @@ class AutoClickForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        isRunning = true
         val settingsRepo = SettingsRepository.getInstance(applicationContext)
         val gestureExecutor = GestureExecutor()
         cycleController = CycleController.getInstance(gestureExecutor, settingsRepo)
@@ -82,22 +83,20 @@ class AutoClickForegroundService : Service() {
     }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                getString(R.string.notification_channel_name),
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = getString(R.string.notification_channel_desc)
-                setShowBadge(false)
-            }
-            notificationManager.createNotificationChannel(channel)
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            getString(R.string.notification_channel_name),
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = getString(R.string.notification_channel_desc)
+            setShowBadge(false)
         }
+        notificationManager.createNotificationChannel(channel)
     }
 
     private fun startForegroundWithNotification(contentText: String) {
         val notification = buildNotification(contentText, "IDLE")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
                 NOTIFICATION_ID,
                 notification,
@@ -159,6 +158,7 @@ class AutoClickForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        isRunning = false
         serviceScope.cancel()
         EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "ForegroundService остановлен")
         super.onDestroy()
@@ -172,20 +172,41 @@ class AutoClickForegroundService : Service() {
         const val ACTION_STOP = "com.example.autoclicker.ACTION_STOP"
         const val ACTION_SHUTDOWN = "com.example.autoclicker.ACTION_SHUTDOWN"
 
+        @Volatile
+        var isRunning: Boolean = false
+            private set
+
         fun start(context: Context) {
-            val intent = Intent(context, AutoClickForegroundService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            if (isRunning) return
+            try {
+                val intent = Intent(context, AutoClickForegroundService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Throwable) {
+                EventLogManager.log(
+                    EventLogManager.TAG_AUTO_CLICKER,
+                    "ERROR: Не удалось запустить ForegroundService: ${e.message}",
+                    isError = true
+                )
             }
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, AutoClickForegroundService::class.java).apply {
-                action = ACTION_SHUTDOWN
+            try {
+                val intent = Intent(context, AutoClickForegroundService::class.java).apply {
+                    action = ACTION_SHUTDOWN
+                }
+                context.startService(intent)
+            } catch (e: Throwable) {
+                EventLogManager.log(
+                    EventLogManager.TAG_AUTO_CLICKER,
+                    "ERROR: Ошибка остановки ForegroundService: ${e.message}",
+                    isError = true
+                )
             }
-            context.startService(intent)
         }
     }
 }

@@ -68,7 +68,6 @@ fun MainScreen(
     onLaunchOverlayService: () -> Unit,
     onStartCycle: () -> Unit,
     onStopCycle: () -> Unit,
-    onRecordPoint: (Int) -> Unit,
     onTestClick: (Int) -> Unit,
     onUpdatePointConfig: (Int, Boolean, Int, Int) -> Unit,
     onUpdateCycleDelay: (Int) -> Unit,
@@ -147,7 +146,6 @@ fun MainScreen(
 
             PointConfigCard(
                 point = settings.point1,
-                onRecordClick = { onRecordPoint(1) },
                 onTestClick = { onTestClick(1) },
                 onToggleEnabled = { enabled ->
                     onUpdatePointConfig(1, enabled, settings.point1.clickCount, settings.point1.intervalSec)
@@ -162,7 +160,6 @@ fun MainScreen(
 
             PointConfigCard(
                 point = settings.point2,
-                onRecordClick = { onRecordPoint(2) },
                 onTestClick = { onTestClick(2) },
                 onToggleEnabled = { enabled ->
                     onUpdatePointConfig(2, enabled, settings.point2.clickCount, settings.point2.intervalSec)
@@ -177,7 +174,6 @@ fun MainScreen(
 
             PointConfigCard(
                 point = settings.point3,
-                onRecordClick = { onRecordPoint(3) },
                 onTestClick = { onTestClick(3) },
                 onToggleEnabled = { enabled ->
                     onUpdatePointConfig(3, enabled, settings.point3.clickCount, settings.point3.intervalSec)
@@ -250,6 +246,23 @@ private fun PermissionsStatusCard(
                     ) {
                         Text("Включить", fontSize = 11.sp)
                     }
+                }
+            }
+
+            if (!isAccessibilityConnected) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF2B1C1C), RoundedCornerShape(8.dp))
+                        .padding(10.dp)
+                ) {
+                    Text(
+                        text = "Включите службу AutoClicker в настройках специальных возможностей. На Android 13 и новее, если переключатель серый: Настройки → Приложения → AutoClicker → меню ⋮ → Разрешить ограниченные настройки, затем вернитесь и включите службу.",
+                        color = Color(0xFFFF8A80),
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    )
                 }
             }
 
@@ -426,19 +439,25 @@ private fun CycleControlCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                val isRunning = cycleStatus != CycleStatus.STOPPED
                 Button(
                     onClick = onStartCycle,
-                    enabled = isAccessibilityConnected && cycleStatus == CycleStatus.STOPPED,
+                    enabled = isAccessibilityConnected && !isRunning,
                     modifier = Modifier
                         .weight(1f)
                         .testTag("start_cycle_btn"),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = AccentGreen,
-                        disabledContainerColor = Color(0xFF2B3A30)
+                        disabledContainerColor = if (isRunning) Color(0xFF00B0FF) else Color(0xFF2B3A30),
+                        disabledContentColor = if (isRunning) Color.White else Color(0xFF78909C)
                     ),
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    Text("START", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text(
+                        text = if (isRunning) "▶ ЗАПУЩЕНО" else "START",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
                 }
 
                 Button(

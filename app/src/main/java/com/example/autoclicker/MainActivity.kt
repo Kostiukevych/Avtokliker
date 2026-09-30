@@ -17,7 +17,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import com.example.autoclicker.service.AutoClickForegroundService
-import com.example.autoclicker.service.CalibrationOverlayView
 import com.example.autoclicker.service.FloatingOverlayService
 import com.example.autoclicker.ui.MainViewModel
 import com.example.autoclicker.ui.screens.MainScreen
@@ -75,7 +74,6 @@ class MainActivity : ComponentActivity() {
                     onLaunchOverlayService = { launchOverlay() },
                     onStartCycle = { viewModel.startCycle() },
                     onStopCycle = { viewModel.stopCycle() },
-                    onRecordPoint = { pointId -> startCalibration(pointId) },
                     onTestClick = { pointId -> viewModel.testClick(pointId) },
                     onUpdatePointConfig = { id, enabled, count, interval ->
                         viewModel.updatePointConfig(id, enabled, count, interval)
@@ -92,6 +90,25 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         viewModel.checkPermissions()
+    }
+
+    /**
+     * Автоматический запуск плавающей кнопки при сворачивании приложения (Requirement А).
+     */
+    override fun onStop() {
+        super.onStop()
+        if (Settings.canDrawOverlays(this)) {
+            try {
+                FloatingOverlayService.start(this)
+                AutoClickForegroundService.start(this)
+            } catch (e: Throwable) {
+                com.example.autoclicker.data.EventLogManager.log(
+                    com.example.autoclicker.data.EventLogManager.TAG_AUTO_CLICKER,
+                    "ERROR: onStop service start: ${e.message}",
+                    isError = true
+                )
+            }
+        }
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -119,15 +136,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openOverlaySettings() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val intent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:$packageName")
-            ).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            startActivity(intent)
+        val intent = Intent(
+            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:$packageName")
+        ).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
+        startActivity(intent)
     }
 
     private fun launchOverlay() {
@@ -135,33 +150,16 @@ class MainActivity : ComponentActivity() {
             openOverlaySettings()
             return
         }
-        FloatingOverlayService.start(this)
-        AutoClickForegroundService.start(this)
-        Toast.makeText(this, "Плавающее окно активировано", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun startCalibration(pointId: Int) {
-        if (!Settings.canDrawOverlays(this)) {
-            Toast.makeText(
-                this,
-                "Для записи координат требуется разрешение на отображение поверх других окон",
-                Toast.LENGTH_LONG
-            ).show()
-            openOverlaySettings()
-            return
+        try {
+            FloatingOverlayService.start(this)
+            AutoClickForegroundService.start(this)
+            Toast.makeText(this, "Плавающая кнопка активирована", Toast.LENGTH_SHORT).show()
+        } catch (e: Throwable) {
+            com.example.autoclicker.data.EventLogManager.log(
+                com.example.autoclicker.data.EventLogManager.TAG_AUTO_CLICKER,
+                "ERROR: Не удалось запустить сервис: ${e.message}",
+                isError = true
+            )
         }
-
-        val overlay = CalibrationOverlayView(
-            context = this,
-            pointId = pointId,
-            onCoordinateCaptured = { x, y ->
-                Toast.makeText(
-                    this,
-                    "Point $pointId сохранена: X=${x.toInt()}, Y=${y.toInt()}",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-        )
-        overlay.show()
     }
 }

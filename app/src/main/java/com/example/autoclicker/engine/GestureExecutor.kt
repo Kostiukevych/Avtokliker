@@ -34,10 +34,10 @@ class GestureExecutor {
             return false
         }
 
-        if (x < 0f || y < 0f) {
+        if (x <= 0f && y <= 0f) {
             EventLogManager.log(
                 EventLogManager.TAG_GESTURE,
-                "ERROR: Некорректные координаты клика: ($x, $y)",
+                "ERROR: POINT NOT CALIBRATED ($x, $y)",
                 isError = true
             )
             return false
@@ -47,13 +47,20 @@ class GestureExecutor {
         val result = withTimeoutOrNull(2000L) {
             suspendCancellableCoroutine<Boolean> { continuation ->
                 try {
+                    // Создаем валидный путь для клика.
+                    // moveTo(x, y) в связке с lineTo(x, y + 1f) гарантирует ненулевую длину пути (Path.isEmpty() == false),
+                    // благодаря чему Android MotionEventGenerator создает реальные физические события ACTION_DOWN и ACTION_UP.
                     val path = Path().apply {
                         moveTo(x, y)
+                        lineTo(x, y + 1f)
                     }
-                    val stroke = GestureDescription.StrokeDescription(path, 0L, duration)
+                    val strokeDuration = duration.coerceIn(20L, 200L)
+                    val stroke = GestureDescription.StrokeDescription(path, 0L, strokeDuration)
                     val gesture = GestureDescription.Builder()
                         .addStroke(stroke)
                         .build()
+
+                    val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
                     val callback = object : AccessibilityService.GestureResultCallback() {
                         override fun onCompleted(gestureDescription: GestureDescription?) {
@@ -78,11 +85,11 @@ class GestureExecutor {
                         }
                     }
 
-                    val dispatched = service.dispatchGesture(gesture, callback, null)
+                    val dispatched = service.dispatchGesture(gesture, callback, mainHandler)
                     if (!dispatched) {
                         EventLogManager.log(
                             EventLogManager.TAG_GESTURE,
-                            "ERROR: Gesture dispatch rejected by system",
+                            "ERROR: Gesture dispatch rejected by system (dispatchGesture returned false)",
                             isError = true
                         )
                         if (continuation.isActive) {

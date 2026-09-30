@@ -1,7 +1,6 @@
 package com.example.autoclicker.engine
 
 import com.example.autoclicker.data.ClickPoint
-import com.example.autoclicker.data.ClickerSettings
 import com.example.autoclicker.data.EventLogManager
 import com.example.autoclicker.data.SettingsRepository
 import com.example.autoclicker.service.AccessibilityServiceHolder
@@ -10,14 +9,17 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.Locale
+import kotlin.coroutines.coroutineContext
 
 /**
  * Состояния цикла автоматизации.
@@ -31,9 +33,13 @@ enum class CycleStatus {
 /**
  * Контроллер цикла автоматизации.
  *
- * Работает строго по независимому фиксированному таймеру:
- * START -> отсчет интервала (например, 7 мин) -> POINT 1 -> POINT 2 -> POINT 3 -> новый интервал 7 мин -> ...
- * Не анализирует продолжительность матча и не ждет окончания игры.
+ * Логика работы:
+ * 1. Нажатие START.
+ * 2. Обратный отсчёт 2 секунды (2s, 1s).
+ * 3. Выполняется ТОЛЬКО Point 1 (Point 2 и Point 3 НЕ нажимаются).
+ * 4. Запускается таймер цикла на N минут (1..15 мин) с обратным отсчетом MM:SS.
+ * 5. По истечении таймера: Point 1 -> пауза 1с -> Point 2 -> пауза 1с -> Point 3.
+ * 6. Снова таймер N минут, снова P1 -> P2 -> P3, до нажатия STOP.
  */
 class CycleController private constructor(
     private val gestureExecutor: GestureExecutor,
@@ -42,6 +48,11 @@ class CycleController private constructor(
     private val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val cycleMutex = Mutex()
     private var cycleJob: Job? = null
+
+    /**
+     * Хуки жизненного цикла нажатия (для оверлея и анимаций).
+     */
+    var tapHooks: TapHooks? = null
 
     private val _status = MutableStateFlow(CycleStatus.STOPPED)
     val status: StateFlow<CycleStatus> = _status.asStateFlow()
@@ -68,7 +79,7 @@ class CycleController private constructor(
         get() = _status.value != CycleStatus.STOPPED && cycleJob?.isActive == true
 
     /**
-     * Запуск автоматизации по фиксированному таймеру.
+     * Запуск автоматизации.
      */
     fun start(): Boolean {
         if (!AccessibilityServiceHolder.isConnected) {
@@ -93,18 +104,29 @@ class CycleController private constructor(
                 _cycleNumber.value = 1
                 _status.value = CycleStatus.RUNNING
                 _lastAction.value = "START"
-                _currentAction.value = "Запуск первого интервала"
-                _nextAction.value = "POINT 1"
-                _remainingSeconds.value = 0
-                _countdownText.value = ""
+                _currentAction.value = "Старт: Point 1 через 2с"
+                _nextAction.value = "Point 1"
+                _remainingSeconds.value = 2
+                _countdownText.value = "2s"
 
-                val delayMin = settingsRepository.getLatestSettings().cycleDelayMinutes
+                // Проверка ориентации и размера экрана при калибровке
+                val latestSettings = settingsRepository.getLatestSettings()
+                val context = settingsRepository.context
+                val currentOrientation = context.resources.configuration.orientation
+                if (latestSettings.pointsOrientation != 0 && latestSettings.pointsOrientation != currentOrientation) {
+                    val warn = "Точки заданы для другой ориентации экрана"
+                    EventLogManager.log(EventLogManager.TAG_CYCLE, "WARN: $warn", isError = true)
+                    _currentAction.value = "Предупреждение: $warn"
+                }
+
+                val delayMin = latestSettings.cycleDelayMinutes
                 EventLogManager.log(
                     EventLogManager.TAG_CYCLE,
-                    "CYCLE STARTED: Интервал = $delayMin мин. Цикл #1"
+                    "CYCLE STARTED: Первый клик Point 1 через 2с, таймер повторов = $delayMin мин"
                 )
 
-                cycleJob = launch {
+                val newJob = launch {
+                    val currentJob = coroutineContext[Job]
                     try {
                         runLoop()
                     } catch (e: CancellationException) {
@@ -117,24 +139,29 @@ class CycleController private constructor(
                             isError = true
                         )
                     } finally {
-                        resetState()
+                        cycleMutex.withLock {
+                            if (cycleJob === currentJob) {
+                                cycleJob = null
+                                resetState()
+                            }
+                        }
                     }
                 }
+                cycleJob = newJob
             }
         }
         return true
     }
 
     /**
-     * Полная немедленная остановка цикла.
+     * Немедленная остановка цикла с ожиданием завершения отменяемой корутины.
      */
     fun stop() {
         coroutineScope.launch {
             cycleMutex.withLock {
                 val jobToCancel = cycleJob
                 cycleJob = null
-                jobToCancel?.cancel()
-
+                jobToCancel?.cancelAndJoin()
                 resetState()
                 _lastAction.value = "STOP"
                 EventLogManager.log(EventLogManager.TAG_CYCLE, "CYCLE STOPPED: Полная остановка")
@@ -151,7 +178,7 @@ class CycleController private constructor(
     }
 
     /**
-     * Одиночное тестовое нажатие по точке.
+     * Одиночное тестовое нажатие по точке с вызовом единых хуков.
      */
     fun testClick(pointId: Int) {
         coroutineScope.launch {
@@ -159,83 +186,141 @@ class CycleController private constructor(
             if (!point.isConfigured) {
                 EventLogManager.log(
                     EventLogManager.TAG_CYCLE,
-                    "ERROR: Точка $pointId не настроена (X=${point.x}, Y=${point.y})",
+                    "POINT NOT CALIBRATED (Point $pointId)",
                     isError = true
                 )
+                _currentAction.value = "Тест: Point $pointId не настроена"
                 return@launch
             }
             EventLogManager.log(
                 EventLogManager.TAG_CYCLE,
                 "TEST TAP POINT $pointId (${point.x.toInt()}, ${point.y.toInt()})"
             )
-            try {
-                val success = gestureExecutor.performTap(point.x, point.y)
-                if (!success) {
-                    EventLogManager.log(
-                        EventLogManager.TAG_CYCLE,
-                        "ERROR: Test tap failed for point $pointId",
-                        isError = true
-                    )
-                }
-            } catch (t: Throwable) {
+            _currentAction.value = "Тест Point $pointId..."
+            val success = performTapWithHooks(point.id, point.x, point.y)
+            if (!success) {
                 EventLogManager.log(
                     EventLogManager.TAG_CYCLE,
-                    "ERROR: Исключение при тестовом жесте: ${t.message}",
+                    "ERROR: Test tap failed for point $pointId",
                     isError = true
                 )
+                _currentAction.value = "Ошибка теста Point $pointId"
+            } else {
+                _lastAction.value = "Тест: Point $pointId OK"
+                _currentAction.value = "Тест Point $pointId OK"
             }
         }
     }
 
     /**
-     * Основной непрерывный цикл:
-     * 1. Отсчет фиксированного интервала (например 7 минут).
-     * 2. Выполнение POINT 1.
-     * 3. Выполнение POINT 2.
-     * 4. Выполнение POINT 3.
-     * 5. Повторение.
+     * Вызов единых хуков TapHooks до и после нажатия.
      */
-    private suspend fun runLoop() {
-        while (coroutineScope.isActive) {
-            val currentCycle = _cycleNumber.value
-            val settings = settingsRepository.getLatestSettings()
-
-            // 1. Ожидание установленного интервала (от 1 до 15 минут)
-            _nextAction.value = "POINT 1"
-            waitCycleInterval(settings.cycleDelayMinutes)
-
-            // 2. Выполнение POINT 1
-            if (settings.point1.enabled) {
-                _nextAction.value = if (settings.point2.enabled) "POINT 2" else "POINT 3"
-                executePoint(settings.point1)
-                safeDelay(1000L, "Пауза после POINT 1")
-            }
-
-            // 3. Выполнение POINT 2
-            if (settings.point2.enabled) {
-                _nextAction.value = if (settings.point3.enabled) "POINT 3" else "Ожидание следующего цикла"
-                executePoint(settings.point2)
-                safeDelay(1000L, "Пауза после POINT 2")
-            }
-
-            // 4. Выполнение POINT 3 (Старт в лобби)
-            if (settings.point3.enabled) {
-                _nextAction.value = "Запуск таймера следующего цикла"
-                executePoint(settings.point3)
-                _lastAction.value = "POINT 3 TAP (Цикл #$currentCycle)"
-                EventLogManager.log(
-                    EventLogManager.TAG_CYCLE,
-                    "POINT 3 COMPLETED: Завершено выполнение серии кликов (Цикл #$currentCycle)"
-                )
-            }
-
-            // 5. Переход к следующему интервалу
-            _cycleNumber.value = currentCycle + 1
-            _lastAction.value = "Цикл #$currentCycle завершен"
+    private suspend fun performTapWithHooks(
+        pointId: Int,
+        x: Float,
+        y: Float,
+        tapIndex: Int = 1,
+        totalTaps: Int = 1
+    ): Boolean {
+        tapHooks?.beforeTap(pointId, x, y, tapIndex, totalTaps)
+        val success = try {
+            gestureExecutor.performTap(x, y)
+        } catch (t: Throwable) {
             EventLogManager.log(
                 EventLogManager.TAG_CYCLE,
-                "CYCLE #$currentCycle FINISHED -> Запуск интервала #${currentCycle + 1}"
+                "ERROR: Ошибка жеста: ${t.message}",
+                isError = true
             )
+            false
+        }
+        tapHooks?.afterTap(pointId, x, y, success, tapIndex, totalTaps)
+        return success
+    }
+
+    /**
+     * Основной цикл автоматизации.
+     */
+    private suspend fun runLoop() {
+        var isFirstRun = true
+
+        while (true) {
+            coroutineContext.ensureActive()
+
+            if (isFirstRun) {
+                // 1. Первый запуск: 2 секунды обратного отсчета
+                _status.value = CycleStatus.RUNNING
+                _nextAction.value = "Point 1"
+
+                _currentAction.value = "Старт: Point 1 через 2с"
+                _countdownText.value = "2s"
+                _remainingSeconds.value = 2
+                delay(1000L)
+                coroutineContext.ensureActive()
+
+                _currentAction.value = "Старт: Point 1 через 1с"
+                _countdownText.value = "1s"
+                _remainingSeconds.value = 1
+                delay(1000L)
+                coroutineContext.ensureActive()
+
+                _countdownText.value = ""
+                _remainingSeconds.value = 0
+
+                // 2. При первом запуске нажимается ТОЛЬКО Point 1!
+                // Point 2 и Point 3 в этот момент НЕ нажимаются.
+                val initialSettings = settingsRepository.getLatestSettings()
+                if (initialSettings.point1.enabled) {
+                    _status.value = CycleStatus.RUNNING
+                    _nextAction.value = "Point 1"
+                    executePoint(initialSettings.point1)
+                }
+
+                isFirstRun = false
+            } else {
+                // В последующих циклах выполняются по очереди: Point 1 -> пауза 1с -> Point 2 -> пауза 1с -> Point 3
+                val currentCycle = _cycleNumber.value
+
+                // 1. Point 1
+                val s1 = settingsRepository.getLatestSettings()
+                if (s1.point1.enabled) {
+                    _status.value = CycleStatus.RUNNING
+                    _nextAction.value = if (s1.point2.enabled) "Point 2" else if (s1.point3.enabled) "Point 3" else "Ожидание"
+                    executePoint(s1.point1)
+                    safeDelay(1000L, "Пауза 1с после Point 1")
+                }
+
+                // 2. Point 2
+                coroutineContext.ensureActive()
+                val s2 = settingsRepository.getLatestSettings()
+                if (s2.point2.enabled) {
+                    _status.value = CycleStatus.RUNNING
+                    _nextAction.value = if (s2.point3.enabled) "Point 3" else "Ожидание"
+                    executePoint(s2.point2)
+                    safeDelay(1000L, "Пауза 1с после Point 2")
+                }
+
+                // 3. Point 3
+                coroutineContext.ensureActive()
+                val s3 = settingsRepository.getLatestSettings()
+                if (s3.point3.enabled) {
+                    _status.value = CycleStatus.RUNNING
+                    _nextAction.value = "Ожидание таймера"
+                    executePoint(s3.point3)
+                    _lastAction.value = "Point 3 (Цикл #$currentCycle)"
+                    EventLogManager.log(
+                        EventLogManager.TAG_CYCLE,
+                        "POINT 3 COMPLETED: Запуск матча выполнен (Цикл #$currentCycle)"
+                    )
+                }
+
+                _cycleNumber.value = currentCycle + 1
+            }
+
+            // 3. Запуск таймера ожидания цикла на N минут (свежие настройки)
+            coroutineContext.ensureActive()
+            val freshSettings = settingsRepository.getLatestSettings()
+            val delayMin = freshSettings.cycleDelayMinutes
+            waitCycleInterval(delayMin)
         }
     }
 
@@ -244,22 +329,25 @@ class CycleController private constructor(
      */
     private suspend fun waitCycleInterval(delayMinutes: Int) {
         _status.value = CycleStatus.WAITING_CYCLE
-        _currentAction.value = "Таймер цикла ($delayMinutes мин)"
-
         val totalSeconds = delayMinutes.coerceIn(1, 15) * 60
+
         EventLogManager.log(
             EventLogManager.TAG_CYCLE,
-            String.format("TIMER STARTED: Ожидание %02d:00 до выполнения кликов", delayMinutes)
+            String.format(Locale.getDefault(), "TIMER STARTED: Ожидание %02d:00 до выполнения кликов", delayMinutes)
         )
 
         var remaining = totalSeconds
-        while (remaining > 0 && coroutineScope.isActive) {
+        while (remaining > 0) {
+            coroutineContext.ensureActive()
+
             val min = remaining / 60
             val sec = remaining % 60
-            val formatted = String.format("%02d:%02d", min, sec)
+            val formatted = String.format(Locale.getDefault(), "%02d:%02d", min, sec)
 
             _remainingSeconds.value = remaining
             _countdownText.value = formatted
+            _currentAction.value = "Ждём таймер: P1→P2→P3 через $formatted"
+            _nextAction.value = "P1→P2→P3 через $formatted"
 
             delay(1000L)
             remaining--
@@ -272,31 +360,47 @@ class CycleController private constructor(
 
     /**
      * Выполнение нажатий для конкретной точки с защитой от сбоев.
+     * Ненастроенная точка пропускается с записью в лог и предупреждением, не останавливая цикл.
      */
     private suspend fun executePoint(point: ClickPoint) {
+        if (!point.isConfigured) {
+            EventLogManager.log(
+                EventLogManager.TAG_CYCLE,
+                "SKIP: Точка ${point.id} не настроена. Пропуск.",
+                isError = true
+            )
+            _currentAction.value = "Пропуск Point ${point.id}: не настроена"
+            return
+        }
+
         val count = point.clickCount.coerceIn(1, 10)
 
         for (i in 1..count) {
-            val actionDesc = "POINT ${point.id} TAP ($i/$count)"
+            coroutineContext.ensureActive()
+
+            val actionDesc = "Point ${point.id}, нажатие $i/$count"
             _currentAction.value = actionDesc
             EventLogManager.log(EventLogManager.TAG_CYCLE, actionDesc)
 
-            try {
-                gestureExecutor.performTap(point.x, point.y)
+            val freshPoint = settingsRepository.getLatestSettings().getPointById(point.id)
+            val success = performTapWithHooks(freshPoint.id, freshPoint.x, freshPoint.y, tapIndex = i, totalTaps = count)
+            if (success) {
                 _lastAction.value = actionDesc
-            } catch (t: Throwable) {
+            } else {
                 EventLogManager.log(
                     EventLogManager.TAG_CYCLE,
-                    "WARN: Ошибка жеста POINT ${point.id} ($i/$count): ${t.message}",
+                    "WARN: Жест не выполнен для Point ${point.id} ($i/$count)",
                     isError = true
                 )
             }
 
             if (i < count) {
-                var remaining = point.intervalSec
-                while (remaining > 0 && coroutineScope.isActive) {
+                var remaining = point.intervalSec.coerceIn(1, 30)
+                while (remaining > 0) {
+                    coroutineContext.ensureActive()
                     _remainingSeconds.value = remaining
                     _countdownText.value = "${remaining}s"
+                    _currentAction.value = "Point ${point.id}: пауза ${remaining}с ($i/$count)"
                     delay(1000L)
                     remaining--
                 }

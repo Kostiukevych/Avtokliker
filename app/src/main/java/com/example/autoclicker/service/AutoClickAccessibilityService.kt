@@ -18,9 +18,11 @@ class AutoClickAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        val caps = serviceInfo?.capabilities ?: 0
+        val canPerform = (caps and android.accessibilityservice.AccessibilityServiceInfo.CAPABILITY_CAN_PERFORM_GESTURES) != 0
         EventLogManager.log(
             EventLogManager.TAG_ACCESSIBILITY,
-            "AccessibilityService подключен и готов к выполнению жестов"
+            "AccessibilityService подключен (canPerformGestures=$canPerform)"
         )
         AccessibilityServiceHolder.setService(this)
     }

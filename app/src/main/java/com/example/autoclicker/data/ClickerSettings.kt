@@ -9,6 +9,9 @@ package com.example.autoclicker.data
  * @param cycleDelayMinutes Фиксированная задержка между циклами в минутах (1..15 минут).
  * @param overlayX Последняя сохраненная координата X плавающего окна.
  * @param overlayY Последняя сохраненная координата Y плавающего окна.
+ * @param pointsOrientation Ориентация экрана при калибровке (1=Portrait, 2=Landscape).
+ * @param pointsScreenWidth Ширина экрана в пикселях при калибровке.
+ * @param pointsScreenHeight Высота экрана в пикселях при калибровке.
  */
 data class ClickerSettings(
     val point1: ClickPoint = ClickPoint(1, "Результат матча / Continue"),
@@ -16,7 +19,10 @@ data class ClickerSettings(
     val point3: ClickPoint = ClickPoint(3, "Старт в лобби"),
     val cycleDelayMinutes: Int = 7,
     val overlayX: Int = 100,
-    val overlayY: Int = 200
+    val overlayY: Int = 200,
+    val pointsOrientation: Int = 0,
+    val pointsScreenWidth: Int = 0,
+    val pointsScreenHeight: Int = 0
 ) {
     fun getPointById(id: Int): ClickPoint {
         return when (id) {

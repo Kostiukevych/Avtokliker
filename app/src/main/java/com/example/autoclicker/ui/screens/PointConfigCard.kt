@@ -14,7 +14,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -24,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -32,14 +32,12 @@ import com.example.autoclicker.ui.theme.AccentGreen
 import com.example.autoclicker.ui.theme.AccentRed
 import com.example.autoclicker.ui.theme.PrimaryBlue
 import com.example.autoclicker.ui.theme.SurfaceDark
-import com.example.autoclicker.ui.theme.TextMuted
 import com.example.autoclicker.ui.theme.TextPrimary
 import com.example.autoclicker.ui.theme.TextSecondary
 
 @Composable
 fun PointConfigCard(
     point: ClickPoint,
-    onRecordClick: () -> Unit,
     onTestClick: () -> Unit,
     onToggleEnabled: (Boolean) -> Unit,
     onCountChange: (Int) -> Unit,
@@ -65,7 +63,12 @@ fun PointConfigCard(
                 Column {
                     Text(
                         text = "POINT ${point.id}",
-                        color = PrimaryBlue,
+                        color = when (point.id) {
+                            1 -> Color(0xFF00E5FF)
+                            2 -> Color(0xFFFFAB00)
+                            3 -> Color(0xFF00E676)
+                            else -> PrimaryBlue
+                        },
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp
                     )
@@ -96,7 +99,7 @@ fun PointConfigCard(
                     .padding(10.dp)
             ) {
                 Text(
-                    text = "Recorded:",
+                    text = "Координаты:",
                     color = TextSecondary,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold
@@ -106,12 +109,12 @@ fun PointConfigCard(
                         text = "X = ${point.x.toInt()}\nY = ${point.y.toInt()}",
                         color = Color(0xFFFFAB00),
                         fontWeight = FontWeight.Bold,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        fontFamily = FontFamily.Monospace,
                         fontSize = 14.sp
                     )
                 } else {
                     Text(
-                        text = "X = —\nY = — (не заданы)",
+                        text = "Координаты не заданы",
                         color = AccentRed,
                         fontSize = 13.sp
                     )
@@ -144,7 +147,7 @@ fun PointConfigCard(
                 steps = 8
             )
 
-            // Настройка интервала повторных нажатий (1..15 сек)
+            // Настройка интервала повторных нажатий (1..30 сек)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -164,33 +167,29 @@ fun PointConfigCard(
             Slider(
                 value = point.intervalSec.toFloat(),
                 onValueChange = { onIntervalChange(it.toInt()) },
-                valueRange = 1f..15f,
-                steps = 13
+                valueRange = 1f..30f,
+                steps = 28
             )
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Кнопки калибровки и тестирования
+            // Пояснение и кнопка тестирования (Requirement Ж)
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Button(
-                    onClick = onRecordClick,
-                    modifier = Modifier
-                        .weight(1.2f)
-                        .testTag("record_point_${point.id}_btn"),
-                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("Record Point ${point.id}", fontSize = 12.sp, maxLines = 1)
-                }
+                Text(
+                    text = "Для установки точки сверните приложение и используйте плавающую кнопку",
+                    color = TextSecondary,
+                    fontSize = 11.sp,
+                    modifier = Modifier.weight(1f)
+                )
 
                 Button(
                     onClick = onTestClick,
                     enabled = point.isConfigured,
                     modifier = Modifier
-                        .weight(0.8f)
                         .testTag("test_point_${point.id}_btn"),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = AccentGreen,
@@ -198,7 +197,7 @@ fun PointConfigCard(
                     ),
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    Text("TEST", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    Text("ТЕСТ", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                 }
             }
         }

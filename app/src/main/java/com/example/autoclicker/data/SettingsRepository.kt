@@ -8,9 +8,9 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Репозиторий хранения настроек в SharedPreferences.
- * Сохраняет все координаты, таймеры и параметры точек на диск.
+ * Сохраняет все координаты, таймеры, ориентацию и параметры точек на диск.
  */
-class SettingsRepository private constructor(context: Context) {
+class SettingsRepository private constructor(val context: Context) {
 
     private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences(
         PREFS_NAME,
@@ -54,6 +54,9 @@ class SettingsRepository private constructor(context: Context) {
         val cycleDelayMinutes = prefs.getInt(KEY_CYCLE_DELAY_MINUTES, 7)
         val overlayX = prefs.getInt(KEY_OVERLAY_X, 50)
         val overlayY = prefs.getInt(KEY_OVERLAY_Y, 150)
+        val pointsOrientation = prefs.getInt(KEY_POINTS_ORIENTATION, 0)
+        val pointsScreenWidth = prefs.getInt(KEY_POINTS_SCREEN_WIDTH, 0)
+        val pointsScreenHeight = prefs.getInt(KEY_POINTS_SCREEN_HEIGHT, 0)
 
         return ClickerSettings(
             point1 = p1,
@@ -61,11 +64,21 @@ class SettingsRepository private constructor(context: Context) {
             point3 = p3,
             cycleDelayMinutes = cycleDelayMinutes,
             overlayX = overlayX,
-            overlayY = overlayY
+            overlayY = overlayY,
+            pointsOrientation = pointsOrientation,
+            pointsScreenWidth = pointsScreenWidth,
+            pointsScreenHeight = pointsScreenHeight
         )
     }
 
-    fun updatePointCoordinates(pointId: Int, x: Float, y: Float) {
+    fun updatePointCoordinates(
+        pointId: Int,
+        x: Float,
+        y: Float,
+        orientation: Int = 0,
+        screenWidth: Int = 0,
+        screenHeight: Int = 0
+    ) {
         val editor = prefs.edit()
         when (pointId) {
             1 -> {
@@ -81,6 +94,13 @@ class SettingsRepository private constructor(context: Context) {
                 editor.putFloat(KEY_P3_Y, y)
             }
         }
+        if (orientation > 0) {
+            editor.putInt(KEY_POINTS_ORIENTATION, orientation)
+        }
+        if (screenWidth > 0 && screenHeight > 0) {
+            editor.putInt(KEY_POINTS_SCREEN_WIDTH, screenWidth)
+            editor.putInt(KEY_POINTS_SCREEN_HEIGHT, screenHeight)
+        }
         editor.apply()
         _settings.value = loadSettings()
     }
@@ -89,21 +109,23 @@ class SettingsRepository private constructor(context: Context) {
 
     fun updatePointConfig(pointId: Int, enabled: Boolean, count: Int, interval: Int) {
         val editor = prefs.edit()
+        val safeCount = count.coerceIn(1, 10)
+        val safeInterval = interval.coerceIn(1, 30)
         when (pointId) {
             1 -> {
                 editor.putBoolean(KEY_P1_ENABLED, enabled)
-                editor.putInt(KEY_P1_COUNT, count)
-                editor.putInt(KEY_P1_INTERVAL, interval)
+                editor.putInt(KEY_P1_COUNT, safeCount)
+                editor.putInt(KEY_P1_INTERVAL, safeInterval)
             }
             2 -> {
                 editor.putBoolean(KEY_P2_ENABLED, enabled)
-                editor.putInt(KEY_P2_COUNT, count)
-                editor.putInt(KEY_P2_INTERVAL, interval)
+                editor.putInt(KEY_P2_COUNT, safeCount)
+                editor.putInt(KEY_P2_INTERVAL, safeInterval)
             }
             3 -> {
                 editor.putBoolean(KEY_P3_ENABLED, enabled)
-                editor.putInt(KEY_P3_COUNT, count)
-                editor.putInt(KEY_P3_INTERVAL, interval)
+                editor.putInt(KEY_P3_COUNT, safeCount)
+                editor.putInt(KEY_P3_INTERVAL, safeInterval)
             }
         }
         editor.apply()
@@ -152,12 +174,16 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_OVERLAY_X = "overlay_x"
         private const val KEY_OVERLAY_Y = "overlay_y"
 
+        private const val KEY_POINTS_ORIENTATION = "points_orientation"
+        private const val KEY_POINTS_SCREEN_WIDTH = "points_screen_width"
+        private const val KEY_POINTS_SCREEN_HEIGHT = "points_screen_height"
+
         @Volatile
         private var INSTANCE: SettingsRepository? = null
 
         fun getInstance(context: Context): SettingsRepository {
             return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: SettingsRepository(context).also { INSTANCE = it }
+                INSTANCE ?: SettingsRepository(context.applicationContext).also { INSTANCE = it }
             }
         }
     }
