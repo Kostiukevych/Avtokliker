@@ -26,6 +26,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Locale
 import kotlin.coroutines.coroutineContext
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
@@ -73,10 +74,11 @@ class SmartEngine private constructor(
 
     // Кеш оригинальных шаблонов из assets
     private var rawTemplates: List<RawTemplate>? = null
-    // Кеш масштабированных и подготовленных для конкретного разрешения шаблонов
+
+    // Кеш масштабированных и подготовленных для конкретного разрешения шаблонов (3 масштаба: 0.93, 1.0, 1.07)
     private var cachedScreenWidth = 0
     private var cachedScreenHeight = 0
-    private var precomputedTemplates: List<PrecomputedTemplate>? = null
+    private var precomputedTemplates: List<PrecomputedMultiScaleTemplate>? = null
 
     data class RawTemplate(
         val name: String,
@@ -84,15 +86,18 @@ class SmartEngine private constructor(
         val isContinue: Boolean
     )
 
-    data class PrecomputedTemplate(
-        val name: String,
-        val isContinue: Boolean,
+    data class TemplateVariant(
+        val scaleMultiplier: Float,
         val tDownW: Int,
         val tDownH: Int,
-        val tScaledW: Int,
-        val tScaledH: Int,
         val tDiff: FloatArray,
         val sigmaT: Double
+    )
+
+    data class PrecomputedMultiScaleTemplate(
+        val name: String,
+        val isContinue: Boolean,
+        val variants: List<TemplateVariant>
     )
 
     data class FoundMatch(
@@ -101,6 +106,24 @@ class SmartEngine private constructor(
         val clickY: Float,
         val score: Float,
         val isContinue: Boolean
+    )
+
+    data class MatchScanResult(
+        val match: FoundMatch?,
+        val bestScoreMvp: Float,
+        val bestScoreBlue: Float,
+        val bestScoreStart: Float
+    )
+
+    private class DownsampledRoi(
+        val roiX0: Int,
+        val roiY0: Int,
+        val downW: Int,
+        val downH: Int,
+        val gray: FloatArray,
+        val sumI: DoubleArray,
+        val sumI2: DoubleArray,
+        val intW: Int
     )
 
     fun start(): Boolean {
@@ -192,6 +215,8 @@ class SmartEngine private constructor(
 
         var lastMatchTime = System.currentTimeMillis()
         val timeout5Min = 5 * 60 * 1000L
+        var unmatchedPassCount = 0
+        var hasLoggedScreenSize = false
 
         while (true) {
             coroutineContext.ensureActive()
@@ -218,6 +243,14 @@ class SmartEngine private constructor(
 
             if (screenshot != null) {
                 try {
+                    if (!hasLoggedScreenSize) {
+                        hasLoggedScreenSize = true
+                        EventLogManager.log(
+                            EventLogManager.TAG_AUTO_CLICKER,
+                            "SMART: размер снимка ${screenshot.width}x${screenshot.height}"
+                        )
+                    }
+
                     // Отладка: сохранение последних 3 снимков
                     val settings = settingsRepository.getLatestSettings()
                     if (settings.isDebugScreenshots) {
@@ -225,9 +258,11 @@ class SmartEngine private constructor(
                     }
 
                     // Поиск шаблонов в порядке приоритета
-                    val match = findMatchInScreenshot(screenshot)
+                    val scanResult = findMatchInScreenshot(screenshot)
+                    val match = scanResult.match
 
                     if (match != null) {
+                        unmatchedPassCount = 0
                         lastMatchTime = System.currentTimeMillis()
                         val logText = "SMART: найдено ${match.name}, тап (${match.clickX.toInt()}, ${match.clickY.toInt()})"
                         EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, logText)
@@ -241,6 +276,18 @@ class SmartEngine private constructor(
                         _nextAction.value = "Пауза ${pauseMs / 1000f}с"
                         delay(pauseMs)
                     } else {
+                        unmatchedPassCount++
+                        if (unmatchedPassCount % 3 == 0) {
+                            val scoreStr = String.format(
+                                Locale.US,
+                                "SMART: лучшие score mvp=%.2f blue=%.2f start=%.2f",
+                                scanResult.bestScoreMvp.coerceAtLeast(0f),
+                                scanResult.bestScoreBlue.coerceAtLeast(0f),
+                                scanResult.bestScoreStart.coerceAtLeast(0f)
+                            )
+                            EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, scoreStr)
+                        }
+
                         // Проверка таймаута 5 минут без совпадений
                         val elapsed = System.currentTimeMillis() - lastMatchTime
                         if (elapsed >= timeout5Min) {
@@ -262,7 +309,7 @@ class SmartEngine private constructor(
                     screenshot.recycle()
                 }
             } else {
-                // Если снимок не удалось сделать (например на API < 30 или сбой системы)
+                // Если снимок не удалось сделать
                 val elapsed = System.currentTimeMillis() - lastMatchTime
                 if (elapsed >= timeout5Min) {
                     EventLogManager.log(
@@ -320,59 +367,91 @@ class SmartEngine private constructor(
         rawTemplates = templates
     }
 
-    private fun getPrecomputedTemplates(screenWidth: Int, screenHeight: Int): List<PrecomputedTemplate> {
+    /**
+     * Предварительный расчет шаблонов в 3-х масштабах: base*0.93, base*1.0, base*1.07 (base = H / 800f).
+     * Уменьшение в 2 раза с настоящим усреднением 2x2 box filter.
+     */
+    private fun getPrecomputedTemplates(screenWidth: Int, screenHeight: Int): List<PrecomputedMultiScaleTemplate> {
         if (precomputedTemplates != null && cachedScreenWidth == screenWidth && cachedScreenHeight == screenHeight) {
             return precomputedTemplates!!
         }
 
         val raw = rawTemplates ?: return emptyList()
-        val scale = screenWidth.toFloat() / 1340f
-        val result = mutableListOf<PrecomputedTemplate>()
+        val baseScale = screenHeight / 800f
+        val scaleMultipliers = floatArrayOf(0.93f, 1.0f, 1.07f)
+        val result = mutableListOf<PrecomputedMultiScaleTemplate>()
 
         for (template in raw) {
-            val tScaledW = (template.bitmap.width * scale).roundToInt().coerceAtLeast(4)
-            val tScaledH = (template.bitmap.height * scale).roundToInt().coerceAtLeast(4)
-            val tDownW = (tScaledW / 4).coerceAtLeast(1)
-            val tDownH = (tScaledH / 4).coerceAtLeast(1)
+            val variants = mutableListOf<TemplateVariant>()
+            for (m in scaleMultipliers) {
+                val scale = baseScale * m
+                var targetW = (template.bitmap.width * scale).roundToInt().coerceAtLeast(4)
+                var targetH = (template.bitmap.height * scale).roundToInt().coerceAtLeast(4)
+                if (targetW % 2 != 0) targetW++
+                if (targetH % 2 != 0) targetH++
 
-            val scaledBmp = Bitmap.createScaledBitmap(template.bitmap, tDownW, tDownH, true)
-            val pixels = IntArray(tDownW * tDownH)
-            scaledBmp.getPixels(pixels, 0, tDownW, 0, 0, tDownW, tDownH)
-            scaledBmp.recycle()
+                val downW = targetW / 2
+                val downH = targetH / 2
 
-            val tGray = FloatArray(tDownW * tDownH)
-            var sumT = 0.0
-            for (i in pixels.indices) {
-                val p = pixels[i]
-                val r = (p shr 16) and 0xFF
-                val g = (p shr 8) and 0xFF
-                val b = p and 0xFF
-                val gray = (r * 299 + g * 587 + b * 114) / 1000f
-                tGray[i] = gray
-                sumT += gray
+                val scaledBmp = Bitmap.createScaledBitmap(template.bitmap, targetW, targetH, true)
+                val pixels = IntArray(targetW * targetH)
+                scaledBmp.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
+                scaledBmp.recycle()
+
+                val tGray = FloatArray(downW * downH)
+                var sumT = 0.0
+                for (dy in 0 until downH) {
+                    val srcY0 = dy * 2
+                    val srcY1 = srcY0 + 1
+                    val r0 = srcY0 * targetW
+                    val r1 = srcY1 * targetW
+                    val dstOffset = dy * downW
+                    for (dx in 0 until downW) {
+                        val srcX0 = dx * 2
+                        val srcX1 = srcX0 + 1
+                        val p00 = pixels[r0 + srcX0]
+                        val p01 = pixels[r0 + srcX1]
+                        val p10 = pixels[r1 + srcX0]
+                        val p11 = pixels[r1 + srcX1]
+
+                        val g00 = (((p00 shr 16) and 0xFF) * 299 + ((p00 shr 8) and 0xFF) * 587 + (p00 and 0xFF) * 114)
+                        val g01 = (((p01 shr 16) and 0xFF) * 299 + ((p01 shr 8) and 0xFF) * 587 + (p01 and 0xFF) * 114)
+                        val g10 = (((p10 shr 16) and 0xFF) * 299 + ((p10 shr 8) and 0xFF) * 587 + (p10 and 0xFF) * 114)
+                        val g11 = (((p11 shr 16) and 0xFF) * 299 + ((p11 shr 8) and 0xFF) * 587 + (p11 and 0xFF) * 114)
+
+                        val avg = (g00 + g01 + g10 + g11) / 4000f
+                        tGray[dstOffset + dx] = avg
+                        sumT += avg
+                    }
+                }
+
+                val n = (downW * downH).toDouble()
+                val meanT = sumT / n
+                val tDiff = FloatArray(downW * downH)
+                var sumDiffSq = 0.0
+                for (i in tGray.indices) {
+                    val diff = (tGray[i] - meanT).toFloat()
+                    tDiff[i] = diff
+                    sumDiffSq += diff * diff
+                }
+                val sigmaT = sqrt(sumDiffSq)
+
+                variants.add(
+                    TemplateVariant(
+                        scaleMultiplier = m,
+                        tDownW = downW,
+                        tDownH = downH,
+                        tDiff = tDiff,
+                        sigmaT = sigmaT
+                    )
+                )
             }
-
-            val n = (tDownW * tDownH).toDouble()
-            val meanT = sumT / n
-            val tDiff = FloatArray(tDownW * tDownH)
-            var sumDiffSq = 0.0
-            for (i in tGray.indices) {
-                val diff = (tGray[i] - meanT).toFloat()
-                tDiff[i] = diff
-                sumDiffSq += diff * diff
-            }
-            val sigmaT = sqrt(sumDiffSq)
 
             result.add(
-                PrecomputedTemplate(
+                PrecomputedMultiScaleTemplate(
                     name = template.name,
                     isContinue = template.isContinue,
-                    tDownW = tDownW,
-                    tDownH = tDownH,
-                    tScaledW = tScaledW,
-                    tScaledH = tScaledH,
-                    tDiff = tDiff,
-                    sigmaT = sigmaT
+                    variants = variants
                 )
             )
         }
@@ -383,31 +462,61 @@ class SmartEngine private constructor(
         return result
     }
 
-    private fun findMatchInScreenshot(screenshot: Bitmap): FoundMatch? {
+    /**
+     * Создает область ROI с уменьшением в 2 раза через честный 2x2 box filter и строит интегральные таблицы.
+     */
+    private fun createDownsampledRoi(
+        screenshot: Bitmap,
+        fracX0: Float,
+        fracX1: Float,
+        fracY0: Float,
+        fracY1: Float
+    ): DownsampledRoi? {
         val screenW = screenshot.width
         val screenH = screenshot.height
 
-        val templates = getPrecomputedTemplates(screenW, screenH)
-        if (templates.isEmpty()) return null
+        val roiX0 = (screenW * fracX0).toInt().coerceIn(0, screenW - 1)
+        val roiX1 = (screenW * fracX1).toInt().coerceIn(roiX0 + 1, screenW)
+        val roiY0 = (screenH * fracY0).toInt().coerceIn(0, screenH - 1)
+        val roiY1 = (screenH * fracY1).toInt().coerceIn(roiY0 + 1, screenH)
 
-        val downW = (screenW / 4).coerceAtLeast(1)
-        val downH = (screenH / 4).coerceAtLeast(1)
+        val rawW = roiX1 - roiX0
+        val rawH = roiY1 - roiY0
 
-        val downScreenshot = Bitmap.createScaledBitmap(screenshot, downW, downH, true)
-        val pixels = IntArray(downW * downH)
-        downScreenshot.getPixels(pixels, 0, downW, 0, 0, downW, downH)
-        downScreenshot.recycle()
+        val evenW = if (rawW % 2 != 0) rawW - 1 else rawW
+        val evenH = if (rawH % 2 != 0) rawH - 1 else rawH
 
-        val imageGray = FloatArray(downW * downH)
-        for (i in pixels.indices) {
-            val p = pixels[i]
-            val r = (p shr 16) and 0xFF
-            val g = (p shr 8) and 0xFF
-            val b = p and 0xFF
-            imageGray[i] = (r * 299 + g * 587 + b * 114) / 1000f
+        val downW = evenW / 2
+        val downH = evenH / 2
+        if (downW < 2 || downH < 2) return null
+
+        val pixels = IntArray(evenW * evenH)
+        screenshot.getPixels(pixels, 0, evenW, roiX0, roiY0, evenW, evenH)
+
+        val gray = FloatArray(downW * downH)
+        for (dy in 0 until downH) {
+            val srcY0 = dy * 2
+            val srcY1 = srcY0 + 1
+            val r0 = srcY0 * evenW
+            val r1 = srcY1 * evenW
+            val dstOffset = dy * downW
+            for (dx in 0 until downW) {
+                val srcX0 = dx * 2
+                val srcX1 = srcX0 + 1
+                val p00 = pixels[r0 + srcX0]
+                val p01 = pixels[r0 + srcX1]
+                val p10 = pixels[r1 + srcX0]
+                val p11 = pixels[r1 + srcX1]
+
+                val g00 = (((p00 shr 16) and 0xFF) * 299 + ((p00 shr 8) and 0xFF) * 587 + (p00 and 0xFF) * 114)
+                val g01 = (((p01 shr 16) and 0xFF) * 299 + ((p01 shr 8) and 0xFF) * 587 + (p01 and 0xFF) * 114)
+                val g10 = (((p10 shr 16) and 0xFF) * 299 + ((p10 shr 8) and 0xFF) * 587 + (p10 and 0xFF) * 114)
+                val g11 = (((p11 shr 16) and 0xFF) * 299 + ((p11 shr 8) and 0xFF) * 587 + (p11 and 0xFF) * 114)
+
+                gray[dstOffset + dx] = (g00 + g01 + g10 + g11) / 4000f
+            }
         }
 
-        // Интегральные таблицы для сумм и сумм квадратов окна
         val intW = downW + 1
         val intH = downH + 1
         val sumI = DoubleArray(intW * intH)
@@ -420,7 +529,7 @@ class SmartEngine private constructor(
             val intRowOffset = (y + 1) * intW
             val prevIntRowOffset = y * intW
             for (x in 0 until downW) {
-                val v = imageGray[rowOffset + x].toDouble()
+                val v = gray[rowOffset + x].toDouble()
                 rowSum += v
                 rowSum2 += v * v
                 sumI[intRowOffset + (x + 1)] = sumI[prevIntRowOffset + (x + 1)] + rowSum
@@ -428,114 +537,217 @@ class SmartEngine private constructor(
             }
         }
 
-        fun getBoxSum(x: Int, y: Int, w: Int, h: Int, table: DoubleArray): Double {
+        return DownsampledRoi(
+            roiX0 = roiX0,
+            roiY0 = roiY0,
+            downW = downW,
+            downH = downH,
+            gray = gray,
+            sumI = sumI,
+            sumI2 = sumI2,
+            intW = intW
+        )
+    }
+
+    /**
+     * NCC сопоставление шаблона внутри области ROI.
+     */
+    private fun searchTemplateInRoi(
+        roi: DownsampledRoi,
+        variant: TemplateVariant
+    ): Pair<Float, Pair<Float, Float>> {
+        val tW = variant.tDownW
+        val tH = variant.tDownH
+        if (roi.downW < tW || roi.downH < tH || variant.sigmaT <= 1e-4) {
+            return Pair(-1f, Pair(0f, 0f))
+        }
+
+        val maxSearchX = roi.downW - tW
+        val maxSearchY = roi.downH - tH
+        val n = (tW * tH).toDouble()
+        val tDiff = variant.tDiff
+        val sigmaT = variant.sigmaT
+        val sumI = roi.sumI
+        val sumI2 = roi.sumI2
+        val intW = roi.intW
+        val gray = roi.gray
+        val downW = roi.downW
+
+        fun getBoxSum(x: Int, y: Int, w: Int, h: Int): Double {
             val x1 = x
             val y1 = y
             val x2 = x + w
             val y2 = y + h
-            val d = table[y2 * intW + x2]
-            val b = table[y1 * intW + x2]
-            val c = table[y2 * intW + x1]
-            val a = table[y1 * intW + x1]
+            val d = sumI[y2 * intW + x2]
+            val b = sumI[y1 * intW + x2]
+            val c = sumI[y2 * intW + x1]
+            val a = sumI[y1 * intW + x1]
             return d - b - c + a
         }
 
-        // Ищем шаблоны в строгом порядке приоритета
-        for (tmpl in templates) {
-            if (tmpl.sigmaT <= 1e-4) continue
-            val tW = tmpl.tDownW
-            val tH = tmpl.tDownH
-            if (downW < tW || downH < tH) continue
+        fun getBoxSum2(x: Int, y: Int, w: Int, h: Int): Double {
+            val x1 = x
+            val y1 = y
+            val x2 = x + w
+            val y2 = y + h
+            val d = sumI2[y2 * intW + x2]
+            val b = sumI2[y1 * intW + x2]
+            val c = sumI2[y2 * intW + x1]
+            val a = sumI2[y1 * intW + x1]
+            return d - b - c + a
+        }
 
-            val maxSearchX = downW - tW
-            val maxSearchY = downH - tH
-            val n = (tW * tH).toDouble()
-            val tDiff = tmpl.tDiff
-            val sigmaT = tmpl.sigmaT
+        var bestScore = -1f
+        var bestX = -1
+        var bestY = -1
 
-            var bestScore = -1f
-            var bestX = -1
-            var bestY = -1
+        // Проход со шагом 2 для быстрого сканирования
+        var y = 0
+        while (y <= maxSearchY) {
+            var x = 0
+            while (x <= maxSearchX) {
+                val sI = getBoxSum(x, y, tW, tH)
+                val sI2 = getBoxSum2(x, y, tW, tH)
+                val varianceI = sI2 - (sI * sI) / n
+                if (varianceI > 1e-4) {
+                    val sigmaI = sqrt(varianceI)
+                    var num = 0.0
+                    var tIdx = 0
+                    for (ty in 0 until tH) {
+                        val rowOffset = (y + ty) * downW + x
+                        for (tx in 0 until tW) {
+                            num += tDiff[tIdx++] * gray[rowOffset + tx]
+                        }
+                    }
+                    val score = (num / (sigmaT * sigmaI)).toFloat()
+                    if (score > bestScore) {
+                        bestScore = score
+                        bestX = x
+                        bestY = y
+                    }
+                }
+                x += 2
+            }
+            y += 2
+        }
 
-            // Быстрый проход со шагом 2
-            var y = 0
-            while (y <= maxSearchY) {
-                var x = 0
-                while (x <= maxSearchX) {
-                    val sI = getBoxSum(x, y, tW, tH, sumI)
-                    val sI2 = getBoxSum(x, y, tW, tH, sumI2)
+        // Уточнение вокруг лучшего кандидата с шагом 1
+        if (bestScore >= 0.65f && bestX >= 0 && bestY >= 0) {
+            val rMinX = (bestX - 2).coerceAtLeast(0)
+            val rMaxX = (bestX + 2).coerceAtMost(maxSearchX)
+            val rMinY = (bestY - 2).coerceAtLeast(0)
+            val rMaxY = (bestY + 2).coerceAtMost(maxSearchY)
+
+            for (ry in rMinY..rMaxY) {
+                for (rx in rMinX..rMaxX) {
+                    if (rx == bestX && ry == bestY) continue
+                    val sI = getBoxSum(rx, ry, tW, tH)
+                    val sI2 = getBoxSum2(rx, ry, tW, tH)
                     val varianceI = sI2 - (sI * sI) / n
                     if (varianceI > 1e-4) {
                         val sigmaI = sqrt(varianceI)
                         var num = 0.0
                         var tIdx = 0
                         for (ty in 0 until tH) {
-                            val imgRowStart = (y + ty) * downW + x
+                            val rowOffset = (ry + ty) * downW + rx
                             for (tx in 0 until tW) {
-                                num += tDiff[tIdx++] * imageGray[imgRowStart + tx]
+                                num += tDiff[tIdx++] * gray[rowOffset + tx]
                             }
                         }
                         val score = (num / (sigmaT * sigmaI)).toFloat()
                         if (score > bestScore) {
                             bestScore = score
-                            bestX = x
-                            bestY = y
-                        }
-                    }
-                    x += 2
-                }
-                y += 2
-            }
-
-            // Уточнение вокруг кандидата с шагом 1
-            if (bestScore >= 0.70f) {
-                val rMinX = (bestX - 2).coerceAtLeast(0)
-                val rMaxX = (bestX + 2).coerceAtMost(maxSearchX)
-                val rMinY = (bestY - 2).coerceAtLeast(0)
-                val rMaxY = (bestY + 2).coerceAtMost(maxSearchY)
-
-                for (ry in rMinY..rMaxY) {
-                    for (rx in rMinX..rMaxX) {
-                        if (rx == bestX && ry == bestY) continue
-                        val sI = getBoxSum(rx, ry, tW, tH, sumI)
-                        val sI2 = getBoxSum(rx, ry, tW, tH, sumI2)
-                        val varianceI = sI2 - (sI * sI) / n
-                        if (varianceI > 1e-4) {
-                            val sigmaI = sqrt(varianceI)
-                            var num = 0.0
-                            var tIdx = 0
-                            for (ty in 0 until tH) {
-                                val imgRowStart = (ry + ty) * downW + rx
-                                for (tx in 0 until tW) {
-                                    num += tDiff[tIdx++] * imageGray[imgRowStart + tx]
-                                }
-                            }
-                            val score = (num / (sigmaT * sigmaI)).toFloat()
-                            if (score > bestScore) {
-                                bestScore = score
-                                bestX = rx
-                                bestY = ry
-                            }
+                            bestX = rx
+                            bestY = ry
                         }
                     }
                 }
-            }
-
-            // Порог совпадения: >= 0.85
-            if (bestScore >= 0.85f && bestX >= 0 && bestY >= 0) {
-                val clickX = (bestX + tW / 2f) * (screenW.toFloat() / downW)
-                val clickY = (bestY + tH / 2f) * (screenH.toFloat() / downH)
-                return FoundMatch(
-                    name = tmpl.name,
-                    clickX = clickX,
-                    clickY = clickY,
-                    score = bestScore,
-                    isContinue = tmpl.isContinue
-                )
             }
         }
 
-        return null
+        if (bestX >= 0 && bestY >= 0) {
+            val clickX = roi.roiX0 + (bestX + tW / 2f) * 2f
+            val clickY = roi.roiY0 + (bestY + tH / 2f) * 2f
+            return Pair(bestScore, Pair(clickX, clickY))
+        }
+
+        return Pair(bestScore, Pair(0f, 0f))
+    }
+
+    /**
+     * Поиск шаблонов в приоритетном порядке: continue_mvp, continue_blue, start.
+     * Порог совпадения: 0.80.
+     */
+    private fun findMatchInScreenshot(screenshot: Bitmap): MatchScanResult {
+        val templates = getPrecomputedTemplates(screenshot.width, screenshot.height)
+        if (templates.isEmpty()) {
+            return MatchScanResult(null, 0f, 0f, 0f)
+        }
+
+        val tmplMvp = templates.firstOrNull { it.name == "continue_mvp" }
+        val tmplBlue = templates.firstOrNull { it.name == "continue_blue" }
+        val tmplStart = templates.firstOrNull { it.name == "start" }
+
+        var bestScoreMvp = 0f
+        var bestMatchMvp: FoundMatch? = null
+
+        var bestScoreBlue = 0f
+        var bestMatchBlue: FoundMatch? = null
+
+        var bestScoreStart = 0f
+        var bestMatchStart: FoundMatch? = null
+
+        // 1. Область Continue: x от 0.55*W до W, y от 0.70*H до H
+        val continueRoi = createDownsampledRoi(screenshot, 0.55f, 1.0f, 0.70f, 1.0f)
+        if (continueRoi != null) {
+            if (tmplMvp != null) {
+                for (v in tmplMvp.variants) {
+                    val (score, coords) = searchTemplateInRoi(continueRoi, v)
+                    if (score > bestScoreMvp) {
+                        bestScoreMvp = score
+                        bestMatchMvp = FoundMatch("continue_mvp", coords.first, coords.second, score, true)
+                    }
+                }
+            }
+            if (tmplBlue != null) {
+                for (v in tmplBlue.variants) {
+                    val (score, coords) = searchTemplateInRoi(continueRoi, v)
+                    if (score > bestScoreBlue) {
+                        bestScoreBlue = score
+                        bestMatchBlue = FoundMatch("continue_blue", coords.first, coords.second, score, true)
+                    }
+                }
+            }
+        }
+
+        // Приоритет 1: continue_mvp (порог 0.80)
+        if (bestScoreMvp >= 0.80f && bestMatchMvp != null) {
+            return MatchScanResult(bestMatchMvp, bestScoreMvp, bestScoreBlue, bestScoreStart)
+        }
+
+        // Приоритет 2: continue_blue (порог 0.80)
+        if (bestScoreBlue >= 0.80f && bestMatchBlue != null) {
+            return MatchScanResult(bestMatchBlue, bestScoreMvp, bestScoreBlue, bestScoreStart)
+        }
+
+        // 2. Область Start: x от 0 до 0.40*W, y от 0.65*H до H
+        val startRoi = createDownsampledRoi(screenshot, 0.0f, 0.40f, 0.65f, 1.0f)
+        if (startRoi != null && tmplStart != null) {
+            for (v in tmplStart.variants) {
+                val (score, coords) = searchTemplateInRoi(startRoi, v)
+                if (score > bestScoreStart) {
+                    bestScoreStart = score
+                    bestMatchStart = FoundMatch("start", coords.first, coords.second, score, false)
+                }
+            }
+        }
+
+        // Приоритет 3: start (порог 0.80)
+        if (bestScoreStart >= 0.80f && bestMatchStart != null) {
+            return MatchScanResult(bestMatchStart, bestScoreMvp, bestScoreBlue, bestScoreStart)
+        }
+
+        return MatchScanResult(null, bestScoreMvp, bestScoreBlue, bestScoreStart)
     }
 
     private fun showUnrecognizedScreenNotification() {

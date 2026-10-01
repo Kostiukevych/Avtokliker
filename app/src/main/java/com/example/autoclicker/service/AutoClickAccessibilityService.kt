@@ -25,6 +25,7 @@ import kotlin.coroutines.resume
 class AutoClickAccessibilityService : AccessibilityService() {
 
     private var lastScreenshotTime: Long = 0L
+    private var lastScreenshotErrorLogTime: Long = 0L
 
     /**
      * Создает снимок экрана в памяти через AccessibilityService.takeScreenshot API 30+.
@@ -63,6 +64,15 @@ class AutoClickAccessibilityService : AccessibilityService() {
                                 argbBitmap?.recycle()
                             }
                         } catch (e: Throwable) {
+                            val errNow = System.currentTimeMillis()
+                            if (errNow - lastScreenshotErrorLogTime >= 10000L) {
+                                lastScreenshotErrorLogTime = errNow
+                                EventLogManager.log(
+                                    EventLogManager.TAG_AUTO_CLICKER,
+                                    "SMART: снимок не удался: ${e.message ?: e.javaClass.simpleName}",
+                                    isError = true
+                                )
+                            }
                             if (continuation.isActive) {
                                 continuation.resume(null)
                             }
@@ -70,6 +80,15 @@ class AutoClickAccessibilityService : AccessibilityService() {
                     }
 
                     override fun onFailure(errorCode: Int) {
+                        val errNow = System.currentTimeMillis()
+                        if (errNow - lastScreenshotErrorLogTime >= 10000L) {
+                            lastScreenshotErrorLogTime = errNow
+                            EventLogManager.log(
+                                EventLogManager.TAG_AUTO_CLICKER,
+                                "SMART: снимок не удался, код $errorCode",
+                                isError = true
+                            )
+                        }
                         if (continuation.isActive) {
                             continuation.resume(null)
                         }
