@@ -57,6 +57,8 @@ class SettingsRepository private constructor(val context: Context) {
         val pointsOrientation = prefs.getInt(KEY_POINTS_ORIENTATION, 0)
         val pointsScreenWidth = prefs.getInt(KEY_POINTS_SCREEN_WIDTH, 0)
         val pointsScreenHeight = prefs.getInt(KEY_POINTS_SCREEN_HEIGHT, 0)
+        val isSmartMode = prefs.getBoolean(KEY_SMART_MODE, false)
+        val isDebugScreenshots = prefs.getBoolean(KEY_DEBUG_SCREENSHOTS, false)
 
         return ClickerSettings(
             point1 = p1,
@@ -67,7 +69,9 @@ class SettingsRepository private constructor(val context: Context) {
             overlayY = overlayY,
             pointsOrientation = pointsOrientation,
             pointsScreenWidth = pointsScreenWidth,
-            pointsScreenHeight = pointsScreenHeight
+            pointsScreenHeight = pointsScreenHeight,
+            isSmartMode = isSmartMode,
+            isDebugScreenshots = isDebugScreenshots
         )
     }
 
@@ -146,6 +150,20 @@ class SettingsRepository private constructor(val context: Context) {
         _settings.value = loadSettings()
     }
 
+    fun updateSmartMode(enabled: Boolean) {
+        prefs.edit()
+            .putBoolean(KEY_SMART_MODE, enabled)
+            .apply()
+        _settings.value = loadSettings()
+    }
+
+    fun updateDebugScreenshots(enabled: Boolean) {
+        prefs.edit()
+            .putBoolean(KEY_DEBUG_SCREENSHOTS, enabled)
+            .apply()
+        _settings.value = loadSettings()
+    }
+
     fun getLatestSettings(): ClickerSettings = _settings.value
 
     companion object {
@@ -177,6 +195,9 @@ class SettingsRepository private constructor(val context: Context) {
         private const val KEY_POINTS_ORIENTATION = "points_orientation"
         private const val KEY_POINTS_SCREEN_WIDTH = "points_screen_width"
         private const val KEY_POINTS_SCREEN_HEIGHT = "points_screen_height"
+
+        private const val KEY_SMART_MODE = "is_smart_mode"
+        private const val KEY_DEBUG_SCREENSHOTS = "is_debug_screenshots"
 
         @Volatile
         private var INSTANCE: SettingsRepository? = null

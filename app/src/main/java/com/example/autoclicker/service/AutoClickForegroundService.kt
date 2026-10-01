@@ -16,7 +16,9 @@ import com.example.autoclicker.R
 import com.example.autoclicker.data.EventLogManager
 import com.example.autoclicker.data.SettingsRepository
 import com.example.autoclicker.engine.CycleController
+import com.example.autoclicker.engine.CycleStatus
 import com.example.autoclicker.engine.GestureExecutor
+import com.example.autoclicker.engine.SmartEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -32,14 +34,17 @@ class AutoClickForegroundService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var cycleController: CycleController
+    private lateinit var smartEngine: SmartEngine
+    private lateinit var settingsRepo: SettingsRepository
     private lateinit var notificationManager: NotificationManager
 
     override fun onCreate() {
         super.onCreate()
         isRunning = true
-        val settingsRepo = SettingsRepository.getInstance(applicationContext)
+        settingsRepo = SettingsRepository.getInstance(applicationContext)
         val gestureExecutor = GestureExecutor()
         cycleController = CycleController.getInstance(gestureExecutor, settingsRepo)
+        smartEngine = SmartEngine.getInstance(applicationContext, gestureExecutor, settingsRepo)
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         createNotificationChannel()
@@ -51,12 +56,21 @@ class AutoClickForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
-                cycleController.start()
+                val settings = settingsRepo.getLatestSettings()
+                if (settings.isSmartMode) {
+                    cycleController.stop()
+                    smartEngine.start()
+                } else {
+                    smartEngine.stop()
+                    cycleController.start()
+                }
             }
             ACTION_STOP -> {
+                smartEngine.stop()
                 cycleController.stop()
             }
             ACTION_SHUTDOWN -> {
+                smartEngine.stop()
                 cycleController.stop()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -67,19 +81,46 @@ class AutoClickForegroundService : Service() {
 
     private fun observeStatus() {
         serviceScope.launch {
+            smartEngine.status.collect {
+                updateNotificationBasedOnState()
+            }
+        }
+        serviceScope.launch {
+            smartEngine.currentAction.collect {
+                updateNotificationBasedOnState()
+            }
+        }
+        serviceScope.launch {
             combine(
                 cycleController.status,
                 cycleController.cycleNumber,
                 cycleController.currentAction,
                 cycleController.countdownText
-            ) { status, cycleNum, currentAct, countdown ->
-                val title = if (cycleNum > 0) "AutoClicker: ${status.name} (Цикл #$cycleNum)" else "AutoClicker: ${status.name}"
-                val text = if (countdown.isNotEmpty()) "$currentAct [$countdown]" else currentAct
-                Pair(title, text)
-            }.collect { (title, text) ->
-                updateNotification(text, title)
-            }
+            ) { _, _, _, _ ->
+                updateNotificationBasedOnState()
+            }.collect {}
         }
+    }
+
+    private fun updateNotificationBasedOnState() {
+        val sStatus = smartEngine.status.value
+        val isSmartActive = sStatus != CycleStatus.STOPPED
+        val title = if (isSmartActive) {
+            "AutoClicker: SMART"
+        } else {
+            val cStatus = cycleController.status.value
+            val cycleNum = cycleController.cycleNumber.value
+            if (cycleNum > 0) "AutoClicker: ${cStatus.name} (Цикл #$cycleNum)" else "AutoClicker: ${cStatus.name}"
+        }
+
+        val text = if (isSmartActive) {
+            smartEngine.currentAction.value
+        } else {
+            val countdown = cycleController.countdownText.value
+            val currentAct = cycleController.currentAction.value
+            if (countdown.isNotEmpty()) "$currentAct [$countdown]" else currentAct
+        }
+        updateNotification(text, title)
     }
 
     private fun createNotificationChannel() {
@@ -159,6 +200,8 @@ class AutoClickForegroundService : Service() {
 
     override fun onDestroy() {
         isRunning = false
+        smartEngine.stop()
+        cycleController.stop()
         serviceScope.cancel()
         EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "ForegroundService остановлен")
         super.onDestroy()

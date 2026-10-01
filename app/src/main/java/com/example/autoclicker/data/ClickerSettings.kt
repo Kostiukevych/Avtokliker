@@ -22,7 +22,9 @@ data class ClickerSettings(
     val overlayY: Int = 200,
     val pointsOrientation: Int = 0,
     val pointsScreenWidth: Int = 0,
-    val pointsScreenHeight: Int = 0
+    val pointsScreenHeight: Int = 0,
+    val isSmartMode: Boolean = false,
+    val isDebugScreenshots: Boolean = false
 ) {
     fun getPointById(id: Int): ClickPoint {
         return when (id) {

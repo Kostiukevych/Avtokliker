@@ -10,11 +10,13 @@ import com.example.autoclicker.data.SettingsRepository
 import com.example.autoclicker.engine.CycleController
 import com.example.autoclicker.engine.CycleStatus
 import com.example.autoclicker.engine.GestureExecutor
+import com.example.autoclicker.engine.SmartEngine
 import com.example.autoclicker.service.AccessibilityServiceHolder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -23,17 +25,65 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val settingsRepo = SettingsRepository.getInstance(application)
     private val gestureExecutor = GestureExecutor()
     private val cycleController = CycleController.getInstance(gestureExecutor, settingsRepo)
+    private val smartEngine = SmartEngine.getInstance(application, gestureExecutor, settingsRepo)
 
     val settings: StateFlow<ClickerSettings> = settingsRepo.settings
     val logs: StateFlow<List<String>> = EventLogManager.logs
 
-    val cycleStatus: StateFlow<CycleStatus> = cycleController.status
-    val currentAction: StateFlow<String> = cycleController.currentAction
-    val lastAction: StateFlow<String> = cycleController.lastAction
-    val nextAction: StateFlow<String> = cycleController.nextAction
-    val remainingSeconds: StateFlow<Int> = cycleController.remainingSeconds
-    val countdownText: StateFlow<String> = cycleController.countdownText
-    val cycleNumber: StateFlow<Int> = cycleController.cycleNumber
+    val cycleStatus: StateFlow<CycleStatus> = combine(
+        cycleController.status,
+        smartEngine.status
+    ) { cStatus: CycleStatus, sStatus: CycleStatus ->
+        if (sStatus != CycleStatus.STOPPED) sStatus else cStatus
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), CycleStatus.STOPPED)
+
+    val currentAction: StateFlow<String> = combine(
+        cycleController.currentAction,
+        smartEngine.currentAction,
+        smartEngine.status
+    ) { cAct: String, sAct: String, sStatus: CycleStatus ->
+        if (sStatus != CycleStatus.STOPPED) sAct else cAct
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "Остановлен")
+
+    val lastAction: StateFlow<String> = combine(
+        cycleController.lastAction,
+        smartEngine.lastAction,
+        smartEngine.status
+    ) { cAct: String, sAct: String, sStatus: CycleStatus ->
+        if (sStatus != CycleStatus.STOPPED) sAct else cAct
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "—")
+
+    val nextAction: StateFlow<String> = combine(
+        cycleController.nextAction,
+        smartEngine.nextAction,
+        smartEngine.status
+    ) { cAct: String, sAct: String, sStatus: CycleStatus ->
+        if (sStatus != CycleStatus.STOPPED) sAct else cAct
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "Готов к запуску")
+
+    val remainingSeconds: StateFlow<Int> = combine(
+        cycleController.remainingSeconds,
+        smartEngine.remainingSeconds,
+        smartEngine.status
+    ) { cSec: Int, sSec: Int, sStatus: CycleStatus ->
+        if (sStatus != CycleStatus.STOPPED) sSec else cSec
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    val countdownText: StateFlow<String> = combine(
+        cycleController.countdownText,
+        smartEngine.countdownText,
+        smartEngine.status
+    ) { cCd: String, sCd: String, sStatus: CycleStatus ->
+        if (sStatus != CycleStatus.STOPPED) sCd else cCd
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+
+    val cycleNumber: StateFlow<Int> = combine(
+        cycleController.cycleNumber,
+        smartEngine.cycleNumber,
+        smartEngine.status
+    ) { cNum: Int, sNum: Int, sStatus: CycleStatus ->
+        if (sStatus != CycleStatus.STOPPED) sNum else cNum
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
     val isAccessibilityConnected: StateFlow<Boolean> = AccessibilityServiceHolder.service
         .stateIn(
@@ -67,11 +117,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         settingsRepo.updateCycleDelay(minutes)
     }
 
+    fun updateSmartMode(enabled: Boolean) {
+        settingsRepo.updateSmartMode(enabled)
+    }
+
+    fun updateDebugScreenshots(enabled: Boolean) {
+        settingsRepo.updateDebugScreenshots(enabled)
+    }
+
     fun startCycle() {
-        cycleController.start()
+        val currentSettings = settingsRepo.getLatestSettings()
+        if (currentSettings.isSmartMode) {
+            cycleController.stop()
+            smartEngine.start()
+        } else {
+            smartEngine.stop()
+            cycleController.start()
+        }
     }
 
     fun stopCycle() {
+        smartEngine.stop()
         cycleController.stop()
     }
 

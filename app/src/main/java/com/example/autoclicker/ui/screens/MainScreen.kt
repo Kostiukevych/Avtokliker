@@ -71,6 +71,8 @@ fun MainScreen(
     onTestClick: (Int) -> Unit,
     onUpdatePointConfig: (Int, Boolean, Int, Int) -> Unit,
     onUpdateCycleDelay: (Int) -> Unit,
+    onUpdateSmartMode: (Boolean) -> Unit = {},
+    onUpdateDebugScreenshots: (Boolean) -> Unit = {},
     onClearLogs: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -124,6 +126,16 @@ fun MainScreen(
                 isAccessibilityConnected = isAccessibilityConnected,
                 onStartCycle = onStartCycle,
                 onStopCycle = onStopCycle
+            )
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Карточка Умного режима (Smart Mode PUBG)
+            SmartModeConfigCard(
+                isSmartMode = settings.isSmartMode,
+                isDebugScreenshots = settings.isDebugScreenshots,
+                onUpdateSmartMode = onUpdateSmartMode,
+                onUpdateDebugScreenshots = onUpdateDebugScreenshots
             )
 
             Spacer(modifier = Modifier.height(14.dp))
@@ -527,6 +539,77 @@ private fun CycleDelayConfigCard(
                 color = TextSecondary,
                 fontSize = 11.sp
             )
+        }
+    }
+}
+
+@Composable
+private fun SmartModeConfigCard(
+    isSmartMode: Boolean,
+    isDebugScreenshots: Boolean,
+    onUpdateSmartMode: (Boolean) -> Unit,
+    onUpdateDebugScreenshots: (Boolean) -> Unit
+) {
+    val isApi30 = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+        border = BorderStroke(1.dp, Color(0xFF2E3346))
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                    Text(
+                        text = "УМНЫЙ РЕЖИМ (PUBG MOBILE)",
+                        color = Color(0xFF00E5FF),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = if (!isApi30) "Нужен Android 11+ для анализа экрана" else "Вместо таймера анализирует экран и нажимает «Продолжить» и «Начать»",
+                        color = if (!isApi30) AccentRed else TextSecondary,
+                        fontSize = 11.sp
+                    )
+                }
+                androidx.compose.material3.Switch(
+                    checked = isSmartMode && isApi30,
+                    onCheckedChange = { onUpdateSmartMode(it) },
+                    enabled = isApi30,
+                    modifier = Modifier.testTag("smart_mode_switch")
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                    Text(
+                        text = "Сохранять снимки (отладка)",
+                        color = TextPrimary,
+                        fontSize = 12.sp
+                    )
+                    Text(
+                        text = "Хранит до 3 последних снимков в cache/screens",
+                        color = TextMuted,
+                        fontSize = 10.sp
+                    )
+                }
+                androidx.compose.material3.Switch(
+                    checked = isDebugScreenshots,
+                    onCheckedChange = { onUpdateDebugScreenshots(it) },
+                    modifier = Modifier.testTag("debug_screenshots_switch")
+                )
+            }
         }
     }
 }

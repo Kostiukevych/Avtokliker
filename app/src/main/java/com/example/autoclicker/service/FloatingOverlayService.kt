@@ -66,6 +66,7 @@ class FloatingOverlayService : Service(), TapHooks {
     private lateinit var windowManager: WindowManager
     private lateinit var settingsRepo: SettingsRepository
     private lateinit var cycleController: CycleController
+    private lateinit var smartEngine: com.example.autoclicker.engine.SmartEngine
     private val gestureExecutor = GestureExecutor()
 
     private var overlayParams: WindowManager.LayoutParams? = null
@@ -84,6 +85,11 @@ class FloatingOverlayService : Service(), TapHooks {
     private lateinit var startBtn: Button
     private lateinit var stopBtn: Button
     private lateinit var togglePointsBtn: Button
+
+    // Умный режим
+    private lateinit var smartModeSwitch: Switch
+    private lateinit var debugScreenshotsSwitch: Switch
+    private lateinit var smartModeHintText: TextView
 
     // Степпер таймера
     private lateinit var timerValueText: TextView
@@ -108,6 +114,8 @@ class FloatingOverlayService : Service(), TapHooks {
         settingsRepo = SettingsRepository.getInstance(applicationContext)
         cycleController = CycleController.getInstance(gestureExecutor, settingsRepo)
         cycleController.tapHooks = this
+        smartEngine = com.example.autoclicker.engine.SmartEngine.getInstance(applicationContext, gestureExecutor, settingsRepo)
+        smartEngine.tapHooks = this
 
         // 1. Создаем полноэкранный слой постоянных меток точек и обратной связи
         visualOverlay = PointsVisualOverlayView(this).apply {
@@ -141,6 +149,8 @@ class FloatingOverlayService : Service(), TapHooks {
     }
 
     private fun shutdownAllWindowsAndServices() {
+        smartEngine.tapHooks = null
+        smartEngine.stop()
         cycleController.tapHooks = null
         cycleController.stop()
         activeCalibrationView?.dismiss()
@@ -539,7 +549,14 @@ class FloatingOverlayService : Service(), TapHooks {
             }
             layoutParams = lp
             setOnClickListener {
-                cycleController.start()
+                val s = settingsRepo.getLatestSettings()
+                if (s.isSmartMode) {
+                    cycleController.stop()
+                    smartEngine.start()
+                } else {
+                    smartEngine.stop()
+                    cycleController.start()
+                }
                 // При нажатии START панель автоматически сворачивается (Requirement Е)
                 setMode(minimized = true)
             }
@@ -558,6 +575,7 @@ class FloatingOverlayService : Service(), TapHooks {
             }
             layoutParams = lp
             setOnClickListener {
+                smartEngine.stop()
                 cycleController.stop()
                 visualOverlay?.cancelAnimations()
             }
@@ -566,6 +584,10 @@ class FloatingOverlayService : Service(), TapHooks {
         controlRow.addView(startBtn)
         controlRow.addView(stopBtn)
         scrollContent.addView(controlRow)
+
+        // РАЗДЕЛ УМНОГО РЕЖИМА (PUBG Mobile)
+        val smartCard = createSmartModeCard()
+        scrollContent.addView(smartCard)
 
         // РАЗДЕЛ ТАЙМЕРА СО СТЕППЕРОМ «−» / «+» (Requirement Б)
         val timerCard = createTimerStepperCard()
@@ -600,6 +622,86 @@ class FloatingOverlayService : Service(), TapHooks {
 
         scrollView.addView(scrollContent)
         expandedLayout.addView(scrollView)
+    }
+
+    private fun createSmartModeCard(): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = createButtonBg(Color.parseColor("#1A212D"), dpToPx(6))
+            setPadding(dpToPx(8), dpToPx(6), dpToPx(8), dpToPx(6))
+            val lp = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dpToPx(6)
+            }
+            layoutParams = lp
+
+            // Верхний ряд: Переключатель Умного режима
+            val smartRow = LinearLayout(this@FloatingOverlayService).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+
+            val smartLabel = TextView(this@FloatingOverlayService).apply {
+                text = "Умный режим (PUBG):"
+                setTextColor(Color.WHITE)
+                textSize = 11f
+                typeface = Typeface.DEFAULT_BOLD
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            smartRow.addView(smartLabel)
+
+            val isApi30 = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+            smartModeSwitch = Switch(this@FloatingOverlayService).apply {
+                val settings = settingsRepo.getLatestSettings()
+                isChecked = settings.isSmartMode && isApi30
+                isEnabled = isApi30
+                setOnCheckedChangeListener { _, isChecked ->
+                    settingsRepo.updateSmartMode(isChecked)
+                }
+            }
+            smartRow.addView(smartModeSwitch)
+            addView(smartRow)
+
+            smartModeHintText = TextView(this@FloatingOverlayService).apply {
+                if (!isApi30) {
+                    text = "Нужен Android 11+"
+                    setTextColor(Color.parseColor("#EF5350"))
+                } else {
+                    text = "Ищет «Продолжить» и «Начать»"
+                    setTextColor(Color.parseColor("#80D8FF"))
+                }
+                textSize = 9f
+                setPadding(0, 0, 0, dpToPx(2))
+            }
+            addView(smartModeHintText)
+
+            // Нижний ряд: Отладка (сохранение снимков)
+            val debugRow = LinearLayout(this@FloatingOverlayService).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dpToPx(2), 0, 0)
+            }
+
+            val debugLabel = TextView(this@FloatingOverlayService).apply {
+                text = "Сохранять снимки (тест):"
+                setTextColor(Color.parseColor("#B0BEC5"))
+                textSize = 10f
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            debugRow.addView(debugLabel)
+
+            debugScreenshotsSwitch = Switch(this@FloatingOverlayService).apply {
+                val settings = settingsRepo.getLatestSettings()
+                isChecked = settings.isDebugScreenshots
+                setOnCheckedChangeListener { _, isChecked ->
+                    settingsRepo.updateDebugScreenshots(isChecked)
+                }
+            }
+            debugRow.addView(debugScreenshotsSwitch)
+            addView(debugRow)
+        }
     }
 
     private fun createTimerStepperCard(): LinearLayout {
@@ -813,6 +915,15 @@ class FloatingOverlayService : Service(), TapHooks {
         val settings = settingsRepo.getLatestSettings()
         timerValueText.text = "${settings.cycleDelayMinutes} мин"
 
+        val isApi30 = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+        if (::smartModeSwitch.isInitialized) {
+            smartModeSwitch.isChecked = settings.isSmartMode && isApi30
+            smartModeSwitch.isEnabled = isApi30
+        }
+        if (::debugScreenshotsSwitch.isInitialized) {
+            debugScreenshotsSwitch.isChecked = settings.isDebugScreenshots
+        }
+
         updatePointRowUi(settings.point1, p1CoordsText, p1Switch)
         updatePointRowUi(settings.point2, p2CoordsText, p2Switch)
         updatePointRowUi(settings.point3, p3CoordsText, p3Switch)
@@ -875,11 +986,20 @@ class FloatingOverlayService : Service(), TapHooks {
 
     private fun observeControllerState() {
         serviceScope.launch {
-            cycleController.status.collect { status ->
-                val cycleNum = cycleController.cycleNumber.value
+            kotlinx.coroutines.flow.combine(
+                cycleController.status,
+                smartEngine.status,
+                cycleController.cycleNumber,
+                smartEngine.cycleNumber
+            ) { cStatus, sStatus, cNum, sNum ->
+                val isSmartActive = sStatus != CycleStatus.STOPPED
+                val status = if (isSmartActive) sStatus else cStatus
+                val cycleNum = if (isSmartActive) sNum else cNum
+                Triple(status, isSmartActive, cycleNum)
+            }.collect { (status, isSmartActive, cycleNum) ->
                 val statusString = when (status) {
                     CycleStatus.STOPPED -> "STATUS: STOPPED"
-                    CycleStatus.RUNNING -> if (cycleNum > 0) "STATUS: RUNNING (#$cycleNum)" else "STATUS: RUNNING"
+                    CycleStatus.RUNNING -> if (isSmartActive) "STATUS: SMART RUNNING" else if (cycleNum > 0) "STATUS: RUNNING (#$cycleNum)" else "STATUS: RUNNING"
                     CycleStatus.WAITING_CYCLE -> if (cycleNum > 0) "STATUS: WAITING (#$cycleNum)" else "STATUS: WAITING"
                 }
                 statusText.text = statusString
@@ -920,14 +1040,31 @@ class FloatingOverlayService : Service(), TapHooks {
         }
 
         serviceScope.launch {
-            cycleController.nextAction.collect { action ->
+            kotlinx.coroutines.flow.combine(
+                cycleController.nextAction,
+                smartEngine.nextAction,
+                smartEngine.status
+            ) { cNext, sNext, sStatus ->
+                if (sStatus != CycleStatus.STOPPED) sNext else cNext
+            }.collect { action ->
                 nextActionText.text = "NEXT: $action"
             }
         }
 
         serviceScope.launch {
-            cycleController.countdownText.collect { cd ->
-                timerText.text = if (cd.isNotEmpty()) "TIMER: $cd" else "TIMER: --"
+            kotlinx.coroutines.flow.combine(
+                cycleController.countdownText,
+                smartEngine.countdownText,
+                smartEngine.status,
+                smartEngine.currentAction
+            ) { cCd, sCd, sStatus, sAction ->
+                if (sStatus != CycleStatus.STOPPED) {
+                    if (sCd.isNotEmpty()) "TIMER: $sCd" else "SMART: $sAction"
+                } else {
+                    if (cCd.isNotEmpty()) "TIMER: $cCd" else "TIMER: --"
+                }
+            }.collect { cdText ->
+                timerText.text = cdText
             }
         }
     }

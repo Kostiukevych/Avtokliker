@@ -81,6 +81,12 @@ class MainActivity : ComponentActivity() {
                     onUpdateCycleDelay = { minutes ->
                         viewModel.updateCycleDelay(minutes)
                     },
+                    onUpdateSmartMode = { enabled ->
+                        viewModel.updateSmartMode(enabled)
+                    },
+                    onUpdateDebugScreenshots = { enabled ->
+                        viewModel.updateDebugScreenshots(enabled)
+                    },
                     onClearLogs = { viewModel.clearLogs() }
                 )
             }
