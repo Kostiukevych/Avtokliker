@@ -4,9 +4,11 @@ import android.app.NotificationManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Point
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import com.example.autoclicker.R
@@ -36,10 +38,11 @@ import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
- * Умный режим (Smart Mode) автокликера.
- *
- * Вместо фиксированного таймера анализирует экран и находит кнопки PUBG Mobile:
- * continue_mvp, continue_blue, start.
+ * Умный режим (Smart Mode) для автоматизации PUBG Mobile:
+ * 1. В лобби находит кнопку «НАЧАТЬ» (по цвету, форме и шаблону) и нажимает на неё.
+ * 2. Ждет начала катки и перехода в матч.
+ * 3. Во время/после катки находит кнопку «ПРОДОЛЖИТЬ» (MVP, синяя, желтая) и нажимает на неё.
+ * 4. Возвращается в лобби и повторяет цикл.
  */
 class SmartEngine private constructor(
     private val context: Context,
@@ -76,10 +79,17 @@ class SmartEngine private constructor(
     val isRunning: Boolean
         get() = _status.value != CycleStatus.STOPPED && engineJob?.isActive == true
 
+    enum class SmartState {
+        LOBBY_SEARCH_START,       // В лобби, поиск кнопки «НАЧАТЬ»
+        WAITING_MATCH_START,      // «НАЧАТЬ» нажата, ожидание подбора/загрузки матча
+        IN_MATCH_SEARCH_CONTINUE, // Матч идет, поиск кнопки «ПРОДОЛЖИТЬ» после катки
+        POST_MATCH_TAP_CONTINUE   // Нажатие серии «ПРОДОЛЖИТЬ» (MVP -> статистика -> лобби)
+    }
+
     // Кеш оригинальных шаблонов из assets
     private var rawTemplates: List<RawTemplate>? = null
 
-    // Кеш масштабированных и подготовленных для конкретного разрешения шаблонов (3 масштаба: 0.93, 1.0, 1.07)
+    // Кеш масштабированных и подготовленных для конкретного разрешения шаблонов (5 масштабов)
     private var cachedScreenWidth = 0
     private var cachedScreenHeight = 0
     private var precomputedTemplates: List<PrecomputedMultiScaleTemplate>? = null
@@ -112,11 +122,11 @@ class SmartEngine private constructor(
         val isContinue: Boolean
     )
 
-    data class MatchScanResult(
-        val match: FoundMatch?,
-        val bestScoreMvp: Float,
-        val bestScoreBlue: Float,
-        val bestScoreStart: Float
+    data class CandidateScanResult(
+        val bestStart: FoundMatch?,
+        val bestContinue: FoundMatch?,
+        val totalCandidates: Int,
+        val debugSummary: String
     )
 
     private class DownsampledRoi(
@@ -165,9 +175,10 @@ class SmartEngine private constructor(
                 _countdownText.value = ""
                 _remainingSeconds.value = 0
 
+                val (realW, realH) = getRealScreenSize()
                 EventLogManager.log(
                     EventLogManager.TAG_AUTO_CLICKER,
-                    "SMART: Умный режим запущен (анализ экрана каждые 2 сек)"
+                    "SMART: Умный режим запущен. Разрешение экрана: ${realW}x${realH}"
                 )
                 EventLogManager.log(
                     EventLogManager.TAG_AUTO_CLICKER,
@@ -232,14 +243,34 @@ class SmartEngine private constructor(
         _countdownText.value = ""
     }
 
+    private fun getRealScreenSize(): Pair<Int, Int> {
+        val wm = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+        if (wm != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val bounds = wm.currentWindowMetrics.bounds
+                return Pair(bounds.width(), bounds.height())
+            } else {
+                @Suppress("DEPRECATION")
+                val display = wm.defaultDisplay
+                val size = Point()
+                @Suppress("DEPRECATION")
+                display.getRealSize(size)
+                return Pair(size.x, size.y)
+            }
+        }
+        val dm = context.resources.displayMetrics
+        return Pair(dm.widthPixels, dm.heightPixels)
+    }
+
     private suspend fun runLoop() {
         ensureTemplatesLoaded()
 
+        var smartState = SmartState.LOBBY_SEARCH_START
         var lastMatchTime = System.currentTimeMillis()
         val timeout5Min = 5 * 60 * 1000L
         var unmatchedPassCount = 0
-        var hasLoggedScreenSize = false
         var consecutiveErrors = 0
+        var lastLoggedSize = ""
 
         while (true) {
             try {
@@ -261,106 +292,182 @@ class SmartEngine private constructor(
                     return
                 }
 
-                _currentAction.value = "Умный режим: анализ экрана..."
-                _nextAction.value = "Поиск кнопок"
+                _currentAction.value = when (smartState) {
+                    SmartState.LOBBY_SEARCH_START -> "Лобби: поиск «НАЧАТЬ»..."
+                    SmartState.WAITING_MATCH_START -> "Матч загружается..."
+                    SmartState.IN_MATCH_SEARCH_CONTINUE -> "В матче: ожидание окончания..."
+                    SmartState.POST_MATCH_TAP_CONTINUE -> "После матча: поиск «ПРОДОЛЖИТЬ»..."
+                }
 
                 val screenshot = service.takeScreenshotBitmap()
-                if (screenshot != null) {
+                if (screenshot != null && !screenshot.isRecycled) {
                     try {
-                        if (!hasLoggedScreenSize) {
-                            hasLoggedScreenSize = true
+                        val (realW, realH) = getRealScreenSize()
+                        val sizeStr = "${screenshot.width}x${screenshot.height}"
+                        if (sizeStr != lastLoggedSize) {
+                            lastLoggedSize = sizeStr
                             EventLogManager.log(
                                 EventLogManager.TAG_AUTO_CLICKER,
-                                "SMART: размер снимка ${screenshot.width}x${screenshot.height}"
+                                "SMART: снимок ${sizeStr} (экран ${realW}x${realH}), состояние: $smartState"
                             )
                         }
 
-                        // Отладка: сохранение последних 3 снимков
+                        // Сохранение отладочных снимков при включенном режиме
                         val settings = settingsRepository.getLatestSettings()
                         if (settings.isDebugScreenshots) {
                             saveDebugScreenshot(screenshot)
                         }
 
-                        // Поиск шаблонов в порядке приоритета
-                        val scanResult = findMatchInScreenshot(screenshot)
-                        val match = scanResult.match
+                        // Поиск кандидатов на экране (цветовая сегментация + шаблоны)
+                        val scanResult = scanAllCandidates(screenshot)
 
-                        if (match != null) {
-                            unmatchedPassCount = 0
-                            lastMatchTime = System.currentTimeMillis()
-                            val logText = "SMART: найдено ${match.name}, тап (${match.clickX.toInt()}, ${match.clickY.toInt()})"
-                            EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, logText)
+                        when (smartState) {
+                            SmartState.LOBBY_SEARCH_START -> {
+                                val match = scanResult.bestStart ?: scanResult.bestContinue
+                                if (match != null) {
+                                    unmatchedPassCount = 0
+                                    lastMatchTime = System.currentTimeMillis()
 
-                            _currentAction.value = "Нажатие ${match.name}..."
-                            _lastAction.value = "${match.name} (${match.clickX.toInt()}, ${match.clickY.toInt()})"
+                                    val scaleX = if (screenshot.width > 0) realW.toFloat() / screenshot.width else 1f
+                                    val scaleY = if (screenshot.height > 0) realH.toFloat() / screenshot.height else 1f
+                                    val finalX = match.clickX * scaleX
+                                    val finalY = match.clickY * scaleY
 
-                            performTapWithHooks(match.clickX, match.clickY)
+                                    val btnLabel = if (match.isContinue) "ПРОДОЛЖИТЬ" else "НАЧАТЬ"
+                                    EventLogManager.log(
+                                        EventLogManager.TAG_AUTO_CLICKER,
+                                        "SMART: Кандидаты: ${scanResult.debugSummary}"
+                                    )
+                                    EventLogManager.log(
+                                        EventLogManager.TAG_AUTO_CLICKER,
+                                        "SMART: Выбрана кнопка «$btnLabel» (${match.name}, score ${(match.score * 100).toInt()}%), клик в (${finalX.toInt()}, ${finalY.toInt()})"
+                                    )
 
-                            val pauseMs = if (match.isContinue) 1500L else 4000L
-                            _nextAction.value = "Пауза ${pauseMs / 1000f}с"
-                            delay(pauseMs)
-                        } else {
-                            unmatchedPassCount++
-                            if (unmatchedPassCount % 3 == 0) {
-                                val scoreStr = String.format(
-                                    Locale.US,
-                                    "SMART: лучшие score mvp=%.2f blue=%.2f start=%.2f",
-                                    scanResult.bestScoreMvp.coerceAtLeast(0f),
-                                    scanResult.bestScoreBlue.coerceAtLeast(0f),
-                                    scanResult.bestScoreStart.coerceAtLeast(0f)
-                                )
-                                EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, scoreStr)
+                                    _currentAction.value = "Нажатие «$btnLabel»..."
+                                    _lastAction.value = "$btnLabel (${finalX.toInt()}, ${finalY.toInt()})"
+
+                                    val tapOk = performTapWithHooks(finalX, finalY)
+                                    EventLogManager.log(
+                                        EventLogManager.TAG_AUTO_CLICKER,
+                                        "SMART: результат dispatchGesture -> ${if (tapOk) "completed (нажатие прошло)" else "cancelled (жест отклонен)"}"
+                                    )
+
+                                    if (!match.isContinue) {
+                                        // Нажата кнопка «НАЧАТЬ» — защита от повторного нажатия и ожидание начала катки
+                                        smartState = SmartState.WAITING_MATCH_START
+                                        _currentAction.value = "«НАЧАТЬ» нажата. Ожидание катки..."
+                                        _nextAction.value = "Пауза 10с"
+
+                                        for (sec in 10 downTo 1) {
+                                            coroutineContext.ensureActive()
+                                            _remainingSeconds.value = sec
+                                            _countdownText.value = "${sec}с"
+                                            delay(1000L)
+                                        }
+                                        _remainingSeconds.value = 0
+                                        _countdownText.value = ""
+
+                                        smartState = SmartState.IN_MATCH_SEARCH_CONTINUE
+                                        lastMatchTime = System.currentTimeMillis()
+                                        EventLogManager.log(
+                                            EventLogManager.TAG_AUTO_CLICKER,
+                                            "SMART: Катка запущена, ожидание экрана окончания матча..."
+                                        )
+                                    } else {
+                                        // Если в лобби была кнопка «ПРОДОЛЖИТЬ», нажимаем и ждем
+                                        delay(2500L)
+                                    }
+                                } else {
+                                    unmatchedPassCount++
+                                    if (unmatchedPassCount % 3 == 0) {
+                                        EventLogManager.log(
+                                            EventLogManager.TAG_AUTO_CLICKER,
+                                            "SMART: кандидаты не найдены: ${scanResult.debugSummary}"
+                                        )
+                                    }
+
+                                    // Проверка таймаута 5 минут без совпадений в лобби
+                                    val elapsed = System.currentTimeMillis() - lastMatchTime
+                                    if (elapsed >= timeout5Min) {
+                                        EventLogManager.log(
+                                            EventLogManager.TAG_AUTO_CLICKER,
+                                            "SMART: экран не распознан",
+                                            isError = true
+                                        )
+                                        EventLogManager.log(
+                                            EventLogManager.TAG_AUTO_CLICKER,
+                                            "SMART: остановка, причина: 5 минут без совпадений"
+                                        )
+                                        showUnrecognizedScreenNotification()
+                                        resetState()
+                                        clearScreensDir()
+                                        return
+                                    }
+
+                                    _nextAction.value = "Повтор через 2с"
+                                    delay(2000L)
+                                }
                             }
 
-                            // Проверка таймаута 5 минут без совпадений
-                            val elapsed = System.currentTimeMillis() - lastMatchTime
-                            if (elapsed >= timeout5Min) {
-                                EventLogManager.log(
-                                    EventLogManager.TAG_AUTO_CLICKER,
-                                    "SMART: экран не распознан",
-                                    isError = true
-                                )
-                                EventLogManager.log(
-                                    EventLogManager.TAG_AUTO_CLICKER,
-                                    "SMART: остановка, причина: 5 минут без совпадений"
-                                )
-                                showUnrecognizedScreenNotification()
-                                resetState()
-                                clearScreensDir()
-                                return
+                            SmartState.WAITING_MATCH_START -> {
+                                delay(2000L)
                             }
 
-                            _currentAction.value = "Умный режим: ожидание..."
-                            _nextAction.value = "Следующий снимок через 2с"
-                            delay(2000L)
+                            SmartState.IN_MATCH_SEARCH_CONTINUE, SmartState.POST_MATCH_TAP_CONTINUE -> {
+                                // Во время матча время не ограничивается 5 минутами (катка длится 15-30 минут)
+                                lastMatchTime = System.currentTimeMillis()
+
+                                val matchContinue = scanResult.bestContinue
+                                val matchStart = scanResult.bestStart
+
+                                if (matchContinue != null) {
+                                    val scaleX = if (screenshot.width > 0) realW.toFloat() / screenshot.width else 1f
+                                    val scaleY = if (screenshot.height > 0) realH.toFloat() / screenshot.height else 1f
+                                    val finalX = matchContinue.clickX * scaleX
+                                    val finalY = matchContinue.clickY * scaleY
+
+                                    EventLogManager.log(
+                                        EventLogManager.TAG_AUTO_CLICKER,
+                                        "SMART: Найдена кнопка «ПРОДОЛЖИТЬ» (${matchContinue.name}, score ${(matchContinue.score * 100).toInt()}%), клик в (${finalX.toInt()}, ${finalY.toInt()})"
+                                    )
+
+                                    _currentAction.value = "Нажатие «ПРОДОЛЖИТЬ»..."
+                                    _lastAction.value = "ПРОДОЛЖИТЬ (${finalX.toInt()}, ${finalY.toInt()})"
+
+                                    val tapOk = performTapWithHooks(finalX, finalY)
+                                    EventLogManager.log(
+                                        EventLogManager.TAG_AUTO_CLICKER,
+                                        "SMART: результат dispatchGesture -> ${if (tapOk) "completed" else "cancelled"}"
+                                    )
+
+                                    smartState = SmartState.POST_MATCH_TAP_CONTINUE
+                                    _nextAction.value = "Пауза 3с"
+                                    delay(3000L)
+                                } else if (smartState == SmartState.POST_MATCH_TAP_CONTINUE && matchStart != null) {
+                                    // Кнопка продолжить исчезла, и появилась кнопка «НАЧАТЬ» — мы снова в лобби!
+                                    EventLogManager.log(
+                                        EventLogManager.TAG_AUTO_CLICKER,
+                                        "SMART: Обнаружено возвращение в лобби!"
+                                    )
+                                    smartState = SmartState.LOBBY_SEARCH_START
+                                    delay(1500L)
+                                } else {
+                                    _nextAction.value = "Ожидание окончания матча (2.5с)"
+                                    delay(2500L)
+                                }
+                            }
                         }
                     } finally {
-                        screenshot.recycle()
+                        if (!screenshot.isRecycled) {
+                            screenshot.recycle()
+                        }
                     }
                 } else {
-                    // Если снимок не удалось сделать
-                    val elapsed = System.currentTimeMillis() - lastMatchTime
-                    if (elapsed >= timeout5Min) {
-                        EventLogManager.log(
-                            EventLogManager.TAG_AUTO_CLICKER,
-                            "SMART: экран не распознан",
-                            isError = true
-                        )
-                        EventLogManager.log(
-                            EventLogManager.TAG_AUTO_CLICKER,
-                            "SMART: остановка, причина: 5 минут без совпадений"
-                        )
-                        showUnrecognizedScreenNotification()
-                        resetState()
-                        clearScreensDir()
-                        return
-                    }
                     _currentAction.value = "Умный режим: ожидание снимка..."
                     _nextAction.value = "Повтор через 2с"
                     delay(2000L)
                 }
 
-                // Сброс счетчика последовательных ошибок при успехе
                 consecutiveErrors = 0
 
             } catch (c: CancellationException) {
@@ -413,10 +520,11 @@ class SmartEngine private constructor(
     }
 
     private fun ensureTemplatesLoaded() {
-        if (rawTemplates != null) return
+        if (rawTemplates != null && rawTemplates!!.isNotEmpty() && rawTemplates!!.all { !it.bitmap.isRecycled }) {
+            return
+        }
 
         val templates = mutableListOf<RawTemplate>()
-        // Порядок приоритета: continue_mvp, continue_blue, start
         val list = listOf(
             Triple("continue_mvp", "templates/continue_mvp.png", true),
             Triple("continue_blue", "templates/continue_blue.png", true),
@@ -443,20 +551,25 @@ class SmartEngine private constructor(
     }
 
     /**
-     * Предварительный расчет шаблонов в 3-х масштабах: base*0.93, base*1.0, base*1.07 (base = H / 800f).
-     * Уменьшение в 2 раза с настоящим усреднением 2x2 box filter.
+     * Предварительный расчет шаблонов в 5 масштабах: 0.85, 0.93, 1.0, 1.07, 1.18.
+     * Не вызывает recycle() на исходных шаблонах rawTemplate.
      */
     private fun getPrecomputedTemplates(screenWidth: Int, screenHeight: Int): List<PrecomputedMultiScaleTemplate> {
         if (precomputedTemplates != null && cachedScreenWidth == screenWidth && cachedScreenHeight == screenHeight) {
-            return precomputedTemplates!!
+            if (rawTemplates != null && rawTemplates!!.all { !it.bitmap.isRecycled }) {
+                return precomputedTemplates!!
+            }
         }
 
+        ensureTemplatesLoaded()
         val raw = rawTemplates ?: return emptyList()
-        val baseScale = screenHeight / 800f
-        val scaleMultipliers = floatArrayOf(0.93f, 1.0f, 1.07f)
+        val minDim = minOf(screenWidth, screenHeight)
+        val baseScale = minDim / 800f
+        val scaleMultipliers = floatArrayOf(0.85f, 0.93f, 1.0f, 1.07f, 1.18f)
         val result = mutableListOf<PrecomputedMultiScaleTemplate>()
 
         for (template in raw) {
+            if (template.bitmap.isRecycled) continue
             val variants = mutableListOf<TemplateVariant>()
             for (m in scaleMultipliers) {
                 val scale = baseScale * m
@@ -468,10 +581,16 @@ class SmartEngine private constructor(
                 val downW = targetW / 2
                 val downH = targetH / 2
 
-                val scaledBmp = Bitmap.createScaledBitmap(template.bitmap, targetW, targetH, true)
+                val scaledBmp = if (targetW == template.bitmap.width && targetH == template.bitmap.height) {
+                    template.bitmap
+                } else {
+                    Bitmap.createScaledBitmap(template.bitmap, targetW, targetH, true)
+                }
                 val pixels = IntArray(targetW * targetH)
                 scaledBmp.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
-                scaledBmp.recycle()
+                if (scaledBmp !== template.bitmap && !scaledBmp.isRecycled) {
+                    scaledBmp.recycle()
+                }
 
                 val tGray = FloatArray(downW * downH)
                 var sumT = 0.0
@@ -538,8 +657,157 @@ class SmartEngine private constructor(
     }
 
     /**
-     * Создает область ROI с уменьшением в 2 раза через честный 2x2 box filter и строит интегральные таблицы.
+     * Поиск желтой кнопки «НАЧАТЬ» в лобби или желтой кнопки «ПРОДОЛЖИТЬ» по цвету и прямоугольной форме.
      */
+    private fun detectYellowButton(
+        screenshot: Bitmap,
+        fracX0: Float,
+        fracX1: Float,
+        fracY0: Float,
+        fracY1: Float,
+        name: String,
+        isContinue: Boolean
+    ): FoundMatch? {
+        val sW = screenshot.width
+        val sH = screenshot.height
+        val x0 = (sW * fracX0).toInt().coerceIn(0, sW - 1)
+        val x1 = (sW * fracX1).toInt().coerceIn(x0 + 1, sW)
+        val y0 = (sH * fracY0).toInt().coerceIn(0, sH - 1)
+        val y1 = (sH * fracY1).toInt().coerceIn(y0 + 1, sH)
+        val roiW = x1 - x0
+        val roiH = y1 - y0
+        if (roiW < 10 || roiH < 10) return null
+
+        val pixels = IntArray(roiW * roiH)
+        screenshot.getPixels(pixels, 0, roiW, x0, y0, roiW, roiH)
+
+        var minX = roiW
+        var maxX = 0
+        var minY = roiH
+        var maxY = 0
+        var yellowCount = 0
+
+        val step = 2
+        for (y in 0 until roiH step step) {
+            val rowOffset = y * roiW
+            for (x in 0 until roiW step step) {
+                val p = pixels[rowOffset + x]
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                // Золотисто-желтый оттенок PUBG Mobile
+                if (r in 180..255 && g in 130..245 && b in 0..115 && (r - b) >= 85 && (g - b) >= 45 && r >= (g - 20)) {
+                    yellowCount++
+                    if (x < minX) minX = x
+                    if (x > maxX) maxX = x
+                    if (y < minY) minY = y
+                    if (y > maxY) maxY = y
+                }
+            }
+        }
+
+        if (yellowCount < 15) return null
+
+        val boxW = maxX - minX + 1
+        val boxH = maxY - minY + 1
+
+        val minAllowedW = (sW * 0.06f).toInt()
+        val maxAllowedW = (sW * 0.40f).toInt()
+        val minAllowedH = (sH * 0.03f).toInt()
+        val maxAllowedH = (sH * 0.22f).toInt()
+
+        if (boxW in minAllowedW..maxAllowedW && boxH in minAllowedH..maxAllowedH) {
+            val aspect = boxW.toFloat() / boxH
+            if (aspect in 1.4f..6.5f) {
+                val totalSampled = ((boxW / step) * (boxH / step)).coerceAtLeast(1)
+                val density = yellowCount.toFloat() / totalSampled
+                if (density >= 0.25f) {
+                    val clickX = x0 + (minX + maxX) / 2f
+                    val clickY = y0 + (minY + maxY) / 2f
+                    val score = (0.86f + (density * 0.10f)).coerceAtMost(0.98f)
+                    return FoundMatch(name, clickX, clickY, score, isContinue)
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Поиск синей кнопки «ПРОДОЛЖИТЬ» / «В ЛОББИ» по цвету и прямоугольной форме.
+     */
+    private fun detectBlueButton(
+        screenshot: Bitmap,
+        fracX0: Float,
+        fracX1: Float,
+        fracY0: Float,
+        fracY1: Float,
+        name: String,
+        isContinue: Boolean
+    ): FoundMatch? {
+        val sW = screenshot.width
+        val sH = screenshot.height
+        val x0 = (sW * fracX0).toInt().coerceIn(0, sW - 1)
+        val x1 = (sW * fracX1).toInt().coerceIn(x0 + 1, sW)
+        val y0 = (sH * fracY0).toInt().coerceIn(0, sH - 1)
+        val y1 = (sH * fracY1).toInt().coerceIn(y0 + 1, sH)
+        val roiW = x1 - x0
+        val roiH = y1 - y0
+        if (roiW < 10 || roiH < 10) return null
+
+        val pixels = IntArray(roiW * roiH)
+        screenshot.getPixels(pixels, 0, roiW, x0, y0, roiW, roiH)
+
+        var minX = roiW
+        var maxX = 0
+        var minY = roiH
+        var maxY = 0
+        var blueCount = 0
+
+        val step = 2
+        for (y in 0 until roiH step step) {
+            val rowOffset = y * roiW
+            for (x in 0 until roiW step step) {
+                val p = pixels[rowOffset + x]
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                // Синий оттенок кнопки продолжения PUBG
+                if (b in 150..255 && r in 0..120 && g in 80..230 && (b - r) >= 60) {
+                    blueCount++
+                    if (x < minX) minX = x
+                    if (x > maxX) maxX = x
+                    if (y < minY) minY = y
+                    if (y > maxY) maxY = y
+                }
+            }
+        }
+
+        if (blueCount < 15) return null
+
+        val boxW = maxX - minX + 1
+        val boxH = maxY - minY + 1
+
+        val minAllowedW = (sW * 0.05f).toInt()
+        val maxAllowedW = (sW * 0.35f).toInt()
+        val minAllowedH = (sH * 0.03f).toInt()
+        val maxAllowedH = (sH * 0.20f).toInt()
+
+        if (boxW in minAllowedW..maxAllowedW && boxH in minAllowedH..maxAllowedH) {
+            val aspect = boxW.toFloat() / boxH
+            if (aspect in 1.4f..6.0f) {
+                val totalSampled = ((boxW / step) * (boxH / step)).coerceAtLeast(1)
+                val density = blueCount.toFloat() / totalSampled
+                if (density >= 0.25f) {
+                    val clickX = x0 + (minX + maxX) / 2f
+                    val clickY = y0 + (minY + maxY) / 2f
+                    val score = (0.84f + (density * 0.10f)).coerceAtMost(0.96f)
+                    return FoundMatch(name, clickX, clickY, score, isContinue)
+                }
+            }
+        }
+        return null
+    }
+
     private fun createDownsampledRoi(
         screenshot: Bitmap,
         fracX0: Float,
@@ -624,9 +892,6 @@ class SmartEngine private constructor(
         )
     }
 
-    /**
-     * NCC сопоставление шаблона внутри области ROI.
-     */
     private fun searchTemplateInRoi(
         roi: DownsampledRoi,
         variant: TemplateVariant
@@ -676,7 +941,6 @@ class SmartEngine private constructor(
         var bestX = -1
         var bestY = -1
 
-        // Проход со шагом 2 для быстрого сканирования
         var y = 0
         while (y <= maxSearchY) {
             var x = 0
@@ -706,7 +970,6 @@ class SmartEngine private constructor(
             y += 2
         }
 
-        // Уточнение вокруг лучшего кандидата с шагом 1
         if (bestScore >= 0.65f && bestX >= 0 && bestY >= 0) {
             val rMinX = (bestX - 2).coerceAtLeast(0)
             val rMaxX = (bestX + 2).coerceAtMost(maxSearchX)
@@ -750,79 +1013,120 @@ class SmartEngine private constructor(
     }
 
     /**
-     * Поиск шаблонов в приоритетном порядке: continue_mvp, continue_blue, start.
-     * Порог совпадения: 0.80.
+     * Комплексное сканирование всех кандидатов:
+     * 1. «НАЧАТЬ» в лобби (левый нижний угол: цвет + шаблон)
+     * 2. «ПРОДОЛЖИТЬ» после катки (правый нижний угол: шаблоны continue_mvp, continue_blue + желтый/синий цвет)
      */
-    private fun findMatchInScreenshot(screenshot: Bitmap): MatchScanResult {
+    private fun scanAllCandidates(screenshot: Bitmap): CandidateScanResult {
         val templates = getPrecomputedTemplates(screenshot.width, screenshot.height)
-        if (templates.isEmpty()) {
-            return MatchScanResult(null, 0f, 0f, 0f)
-        }
-
         val tmplMvp = templates.firstOrNull { it.name == "continue_mvp" }
         val tmplBlue = templates.firstOrNull { it.name == "continue_blue" }
         val tmplStart = templates.firstOrNull { it.name == "start" }
 
-        var bestScoreMvp = 0f
-        var bestMatchMvp: FoundMatch? = null
+        var countCandidates = 0
 
-        var bestScoreBlue = 0f
-        var bestMatchBlue: FoundMatch? = null
+        // 1. Поиск в левом нижнем углу («НАЧАТЬ»)
+        var bestStartMatch: FoundMatch? = null
+        var bestStartScore = 0f
 
-        var bestScoreStart = 0f
-        var bestMatchStart: FoundMatch? = null
+        // А) Поиск жёлтой кнопки «НАЧАТЬ» по цвету и геометрии
+        val yellowStart = detectYellowButton(screenshot, 0.0f, 0.42f, 0.65f, 1.0f, "start_yellow", false)
+        if (yellowStart != null && yellowStart.score >= 0.78f) {
+            bestStartMatch = yellowStart
+            bestStartScore = yellowStart.score
+            countCandidates++
+        }
 
-        // 1. Область Continue: x от 0.55*W до W, y от 0.70*H до H
-        val continueRoi = createDownsampledRoi(screenshot, 0.55f, 1.0f, 0.70f, 1.0f)
+        // Б) Шаблонный поиск «НАЧАТЬ»
+        var tmplStartScore = 0f
+        val startRoi = createDownsampledRoi(screenshot, 0.0f, 0.42f, 0.65f, 1.0f)
+        if (startRoi != null && tmplStart != null) {
+            for (v in tmplStart.variants) {
+                val (score, coords) = searchTemplateInRoi(startRoi, v)
+                if (score > tmplStartScore) {
+                    tmplStartScore = score
+                    if (score >= 0.75f && score > bestStartScore) {
+                        bestStartScore = score
+                        bestStartMatch = FoundMatch("start_template", coords.first, coords.second, score, false)
+                        countCandidates++
+                    }
+                }
+            }
+        }
+
+        // 2. Поиск в правом нижнем углу («ПРОДОЛЖИТЬ»)
+        var bestContinueMatch: FoundMatch? = null
+        var bestContinueScore = 0f
+
+        // А) Шаблоны continue_mvp и continue_blue
+        var scoreMvp = 0f
+        var scoreBlueTmpl = 0f
+        val continueRoi = createDownsampledRoi(screenshot, 0.50f, 1.0f, 0.65f, 1.0f)
         if (continueRoi != null) {
             if (tmplMvp != null) {
                 for (v in tmplMvp.variants) {
                     val (score, coords) = searchTemplateInRoi(continueRoi, v)
-                    if (score > bestScoreMvp) {
-                        bestScoreMvp = score
-                        bestMatchMvp = FoundMatch("continue_mvp", coords.first, coords.second, score, true)
+                    if (score > scoreMvp) {
+                        scoreMvp = score
+                        if (score >= 0.75f && score > bestContinueScore) {
+                            bestContinueScore = score
+                            bestContinueMatch = FoundMatch("continue_mvp", coords.first, coords.second, score, true)
+                            countCandidates++
+                        }
                     }
                 }
             }
             if (tmplBlue != null) {
                 for (v in tmplBlue.variants) {
                     val (score, coords) = searchTemplateInRoi(continueRoi, v)
-                    if (score > bestScoreBlue) {
-                        bestScoreBlue = score
-                        bestMatchBlue = FoundMatch("continue_blue", coords.first, coords.second, score, true)
+                    if (score > scoreBlueTmpl) {
+                        scoreBlueTmpl = score
+                        if (score >= 0.75f && score > bestContinueScore) {
+                            bestContinueScore = score
+                            bestContinueMatch = FoundMatch("continue_blue", coords.first, coords.second, score, true)
+                            countCandidates++
+                        }
                     }
                 }
             }
         }
 
-        // Приоритет 1: continue_mvp (порог 0.80)
-        if (bestScoreMvp >= 0.80f && bestMatchMvp != null) {
-            return MatchScanResult(bestMatchMvp, bestScoreMvp, bestScoreBlue, bestScoreStart)
-        }
-
-        // Приоритет 2: continue_blue (порог 0.80)
-        if (bestScoreBlue >= 0.80f && bestMatchBlue != null) {
-            return MatchScanResult(bestMatchBlue, bestScoreMvp, bestScoreBlue, bestScoreStart)
-        }
-
-        // 2. Область Start: x от 0 до 0.40*W, y от 0.65*H до H
-        val startRoi = createDownsampledRoi(screenshot, 0.0f, 0.40f, 0.65f, 1.0f)
-        if (startRoi != null && tmplStart != null) {
-            for (v in tmplStart.variants) {
-                val (score, coords) = searchTemplateInRoi(startRoi, v)
-                if (score > bestScoreStart) {
-                    bestScoreStart = score
-                    bestMatchStart = FoundMatch("start", coords.first, coords.second, score, false)
-                }
+        // Б) Цветовой поиск продолжения (синяя или желтая кнопка)
+        val blueContinue = detectBlueButton(screenshot, 0.50f, 1.0f, 0.65f, 1.0f, "continue_blue_color", true)
+        if (blueContinue != null && blueContinue.score >= 0.78f) {
+            countCandidates++
+            if (blueContinue.score > bestContinueScore) {
+                bestContinueScore = blueContinue.score
+                bestContinueMatch = blueContinue
             }
         }
 
-        // Приоритет 3: start (порог 0.80)
-        if (bestScoreStart >= 0.80f && bestMatchStart != null) {
-            return MatchScanResult(bestMatchStart, bestScoreMvp, bestScoreBlue, bestScoreStart)
+        val yellowContinue = detectYellowButton(screenshot, 0.50f, 1.0f, 0.65f, 1.0f, "continue_yellow_color", true)
+        if (yellowContinue != null && yellowContinue.score >= 0.78f) {
+            countCandidates++
+            if (yellowContinue.score > bestContinueScore) {
+                bestContinueScore = yellowContinue.score
+                bestContinueMatch = yellowContinue
+            }
         }
 
-        return MatchScanResult(null, bestScoreMvp, bestScoreBlue, bestScoreStart)
+        val summary = String.format(
+            Locale.US,
+            "start(color=%.2f, tmpl=%.2f), continue(mvp=%.2f, blue=%.2f, col_blue=%.2f, col_yel=%.2f)",
+            yellowStart?.score ?: 0f,
+            tmplStartScore,
+            scoreMvp,
+            scoreBlueTmpl,
+            blueContinue?.score ?: 0f,
+            yellowContinue?.score ?: 0f
+        )
+
+        return CandidateScanResult(
+            bestStart = bestStartMatch,
+            bestContinue = bestContinueMatch,
+            totalCandidates = countCandidates,
+            debugSummary = summary
+        )
     }
 
     private fun showUnrecognizedScreenNotification() {

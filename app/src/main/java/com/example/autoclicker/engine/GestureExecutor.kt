@@ -23,12 +23,12 @@ class GestureExecutor {
      * @param duration Длительность касания в миллисекундах (по умолчанию 50ms)
      * @return true если жест успешно выполнен, false при ошибке или отмене
      */
-    suspend fun performTap(x: Float, y: Float, duration: Long = 50L): Boolean {
+    suspend fun performTap(x: Float, y: Float, duration: Long = 80L): Boolean {
         val service = AccessibilityServiceHolder.service.value
         if (service == null) {
             EventLogManager.log(
                 EventLogManager.TAG_GESTURE,
-                "ERROR: AccessibilityService unavailable",
+                "ERROR: AccessibilityService недоступен или отключен в настройках системы",
                 isError = true
             )
             return false
@@ -37,7 +37,7 @@ class GestureExecutor {
         if (x <= 0f && y <= 0f) {
             EventLogManager.log(
                 EventLogManager.TAG_GESTURE,
-                "ERROR: POINT NOT CALIBRATED ($x, $y)",
+                "ERROR: Некорректные координаты клика ($x, $y)",
                 isError = true
             )
             return false
@@ -47,14 +47,11 @@ class GestureExecutor {
         val result = withTimeoutOrNull(2000L) {
             suspendCancellableCoroutine<Boolean> { continuation ->
                 try {
-                    // Создаем валидный путь для клика.
-                    // moveTo(x, y) в связке с lineTo(x, y + 1f) гарантирует ненулевую длину пути (Path.isEmpty() == false),
-                    // благодаря чему Android MotionEventGenerator создает реальные физические события ACTION_DOWN и ACTION_UP.
                     val path = Path().apply {
                         moveTo(x, y)
                         lineTo(x, y + 1f)
                     }
-                    val strokeDuration = duration.coerceIn(20L, 200L)
+                    val strokeDuration = duration.coerceIn(40L, 200L)
                     val stroke = GestureDescription.StrokeDescription(path, 0L, strokeDuration)
                     val gesture = GestureDescription.Builder()
                         .addStroke(stroke)
@@ -66,7 +63,7 @@ class GestureExecutor {
                         override fun onCompleted(gestureDescription: GestureDescription?) {
                             EventLogManager.log(
                                 EventLogManager.TAG_GESTURE,
-                                "TAP [X=${x.toInt()}, Y=${y.toInt()}] OK"
+                                "GESTURE: completed на (${x.toInt()}, ${y.toInt()}) [длительность ${strokeDuration}мс]"
                             )
                             if (continuation.isActive) {
                                 continuation.resume(true)
@@ -76,7 +73,7 @@ class GestureExecutor {
                         override fun onCancelled(gestureDescription: GestureDescription?) {
                             EventLogManager.log(
                                 EventLogManager.TAG_GESTURE,
-                                "ERROR: Gesture dispatch failed (cancelled) at ($x, $y)",
+                                "GESTURE: cancelled на (${x.toInt()}, ${y.toInt()}) — жест отменен системой",
                                 isError = true
                             )
                             if (continuation.isActive) {
@@ -89,7 +86,7 @@ class GestureExecutor {
                     if (!dispatched) {
                         EventLogManager.log(
                             EventLogManager.TAG_GESTURE,
-                            "ERROR: Gesture dispatch rejected by system (dispatchGesture returned false)",
+                            "GESTURE: rejected — dispatchGesture вернул false. Проверьте разрешение жестов у сервиса.",
                             isError = true
                         )
                         if (continuation.isActive) {
