@@ -33,6 +33,15 @@ class AutoClickAccessibilityService : AccessibilityService() {
      */
     suspend fun takeScreenshotBitmap(): Bitmap? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            val errNow = System.currentTimeMillis()
+            if (errNow - lastScreenshotErrorLogTime >= 10000L) {
+                lastScreenshotErrorLogTime = errNow
+                EventLogManager.log(
+                    EventLogManager.TAG_AUTO_CLICKER,
+                    "SMART: снимок не удался: требуется Android 11+ (API 30+), текущий API ${Build.VERSION.SDK_INT}",
+                    isError = true
+                )
+            }
             return null
         }
 
@@ -44,32 +53,49 @@ class AutoClickAccessibilityService : AccessibilityService() {
         lastScreenshotTime = System.currentTimeMillis()
 
         return suspendCancellableCoroutine { continuation ->
-            val executor = ContextCompat.getMainExecutor(this)
-            takeScreenshot(
-                Display.DEFAULT_DISPLAY,
-                executor,
-                object : TakeScreenshotCallback {
-                    override fun onSuccess(screenshotResult: ScreenshotResult) {
-                        try {
-                            val hardwareBuffer = screenshotResult.hardwareBuffer
-                            val colorSpace = screenshotResult.colorSpace
-                            val hwBitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, colorSpace)
-                            val argbBitmap = hwBitmap?.copy(Bitmap.Config.ARGB_8888, false)
-                            hwBitmap?.recycle()
-                            hardwareBuffer.close()
+            try {
+                val executor = ContextCompat.getMainExecutor(this)
+                takeScreenshot(
+                    Display.DEFAULT_DISPLAY,
+                    executor,
+                    object : TakeScreenshotCallback {
+                        override fun onSuccess(screenshotResult: ScreenshotResult) {
+                            try {
+                                val hardwareBuffer = screenshotResult.hardwareBuffer
+                                val colorSpace = screenshotResult.colorSpace
+                                val hwBitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, colorSpace)
+                                val argbBitmap = hwBitmap?.copy(Bitmap.Config.ARGB_8888, false)
+                                hwBitmap?.recycle()
+                                hardwareBuffer.close()
 
-                            if (continuation.isActive) {
-                                continuation.resume(argbBitmap)
-                            } else {
-                                argbBitmap?.recycle()
+                                if (continuation.isActive) {
+                                    continuation.resume(argbBitmap)
+                                } else {
+                                    argbBitmap?.recycle()
+                                }
+                            } catch (e: Throwable) {
+                                val errNow = System.currentTimeMillis()
+                                if (errNow - lastScreenshotErrorLogTime >= 10000L) {
+                                    lastScreenshotErrorLogTime = errNow
+                                    EventLogManager.log(
+                                        EventLogManager.TAG_AUTO_CLICKER,
+                                        "SMART: снимок не удался: ${e.message ?: e.javaClass.simpleName}",
+                                        isError = true
+                                    )
+                                }
+                                if (continuation.isActive) {
+                                    continuation.resume(null)
+                                }
                             }
-                        } catch (e: Throwable) {
+                        }
+
+                        override fun onFailure(errorCode: Int) {
                             val errNow = System.currentTimeMillis()
                             if (errNow - lastScreenshotErrorLogTime >= 10000L) {
                                 lastScreenshotErrorLogTime = errNow
                                 EventLogManager.log(
                                     EventLogManager.TAG_AUTO_CLICKER,
-                                    "SMART: снимок не удался: ${e.message ?: e.javaClass.simpleName}",
+                                    "SMART: снимок не удался, код $errorCode",
                                     isError = true
                                 )
                             }
@@ -78,23 +104,21 @@ class AutoClickAccessibilityService : AccessibilityService() {
                             }
                         }
                     }
-
-                    override fun onFailure(errorCode: Int) {
-                        val errNow = System.currentTimeMillis()
-                        if (errNow - lastScreenshotErrorLogTime >= 10000L) {
-                            lastScreenshotErrorLogTime = errNow
-                            EventLogManager.log(
-                                EventLogManager.TAG_AUTO_CLICKER,
-                                "SMART: снимок не удался, код $errorCode",
-                                isError = true
-                            )
-                        }
-                        if (continuation.isActive) {
-                            continuation.resume(null)
-                        }
-                    }
+                )
+            } catch (e: Throwable) {
+                val errNow = System.currentTimeMillis()
+                if (errNow - lastScreenshotErrorLogTime >= 10000L) {
+                    lastScreenshotErrorLogTime = errNow
+                    EventLogManager.log(
+                        EventLogManager.TAG_AUTO_CLICKER,
+                        "SMART: снимок не удался: ${e.message ?: e.javaClass.simpleName}",
+                        isError = true
+                    )
                 }
-            )
+                if (continuation.isActive) {
+                    continuation.resume(null)
+                }
+            }
         }
     }
 

@@ -4,6 +4,10 @@ import android.app.NotificationManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import com.example.autoclicker.R
 import com.example.autoclicker.data.EventLogManager
@@ -43,8 +47,8 @@ class SmartEngine private constructor(
     private val settingsRepository: SettingsRepository
 ) {
     private val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val engineMutex = Mutex()
     private var engineJob: Job? = null
+    private val engineMutex = Mutex()
 
     var tapHooks: TapHooks? = null
 
@@ -133,6 +137,13 @@ class SmartEngine private constructor(
                 "ERROR: AccessibilityService unavailable. Запуск Smart Mode невозможен.",
                 isError = true
             )
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(
+                    context,
+                    "Включите сервис доступности AutoClicker в настройках Android",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
             return false
         }
 
@@ -158,19 +169,29 @@ class SmartEngine private constructor(
                     EventLogManager.TAG_AUTO_CLICKER,
                     "SMART: Умный режим запущен (анализ экрана каждые 2 сек)"
                 )
+                EventLogManager.log(
+                    EventLogManager.TAG_AUTO_CLICKER,
+                    "SMART: сервис доступности подключён, API=${Build.VERSION.SDK_INT}"
+                )
 
                 val newJob = launch {
                     val currentJob = coroutineContext[Job]
                     try {
                         runLoop()
                     } catch (e: CancellationException) {
-                        EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "SMART: Остановлен пользователем")
                         throw e
                     } catch (t: Throwable) {
+                        val projectTrace = t.stackTrace.firstOrNull { it.className.startsWith("com.example.autoclicker") }
+                            ?: t.stackTrace.firstOrNull()
+                        val traceStr = projectTrace?.toString() ?: "unknown"
                         EventLogManager.log(
                             EventLogManager.TAG_AUTO_CLICKER,
-                            "ERROR in SmartEngine: ${t.message}",
+                            "SMART: ОШИБКА в цикле: ${t.javaClass.simpleName}: ${t.message ?: ""} @ $traceStr",
                             isError = true
+                        )
+                        EventLogManager.log(
+                            EventLogManager.TAG_AUTO_CLICKER,
+                            "SMART: остановка, причина: ошибки"
                         )
                     } finally {
                         engineMutex.withLock {
@@ -188,17 +209,18 @@ class SmartEngine private constructor(
         return true
     }
 
-    fun stop() {
+    fun stop(reason: String = "кнопка Стоп") {
         coroutineScope.launch {
+            val jobToCancel: Job?
             engineMutex.withLock {
-                val jobToCancel = engineJob
+                jobToCancel = engineJob
                 engineJob = null
-                jobToCancel?.cancelAndJoin()
                 resetState()
                 clearScreensDir()
                 _lastAction.value = "STOP"
-                EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "SMART: Остановлен")
+                EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "SMART: остановка, причина: $reason")
             }
+            jobToCancel?.cancelAndJoin()
         }
     }
 
@@ -217,110 +239,163 @@ class SmartEngine private constructor(
         val timeout5Min = 5 * 60 * 1000L
         var unmatchedPassCount = 0
         var hasLoggedScreenSize = false
+        var consecutiveErrors = 0
 
         while (true) {
-            coroutineContext.ensureActive()
+            try {
+                coroutineContext.ensureActive()
 
-            val service = AccessibilityServiceHolder.service.value
-            if (service == null) {
-                EventLogManager.log(
-                    EventLogManager.TAG_AUTO_CLICKER,
-                    "ERROR: AccessibilityService disconnected during Smart Mode",
-                    isError = true
-                )
-                stop()
-                break
-            }
-
-            _currentAction.value = "Умный режим: анализ экрана..."
-            _nextAction.value = "Поиск кнопок"
-
-            val screenshot = try {
-                service.takeScreenshotBitmap()
-            } catch (t: Throwable) {
-                null
-            }
-
-            if (screenshot != null) {
-                try {
-                    if (!hasLoggedScreenSize) {
-                        hasLoggedScreenSize = true
-                        EventLogManager.log(
-                            EventLogManager.TAG_AUTO_CLICKER,
-                            "SMART: размер снимка ${screenshot.width}x${screenshot.height}"
-                        )
-                    }
-
-                    // Отладка: сохранение последних 3 снимков
-                    val settings = settingsRepository.getLatestSettings()
-                    if (settings.isDebugScreenshots) {
-                        saveDebugScreenshot(screenshot)
-                    }
-
-                    // Поиск шаблонов в порядке приоритета
-                    val scanResult = findMatchInScreenshot(screenshot)
-                    val match = scanResult.match
-
-                    if (match != null) {
-                        unmatchedPassCount = 0
-                        lastMatchTime = System.currentTimeMillis()
-                        val logText = "SMART: найдено ${match.name}, тап (${match.clickX.toInt()}, ${match.clickY.toInt()})"
-                        EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, logText)
-
-                        _currentAction.value = "Нажатие ${match.name}..."
-                        _lastAction.value = "${match.name} (${match.clickX.toInt()}, ${match.clickY.toInt()})"
-
-                        performTapWithHooks(match.clickX, match.clickY)
-
-                        val pauseMs = if (match.isContinue) 1500L else 4000L
-                        _nextAction.value = "Пауза ${pauseMs / 1000f}с"
-                        delay(pauseMs)
-                    } else {
-                        unmatchedPassCount++
-                        if (unmatchedPassCount % 3 == 0) {
-                            val scoreStr = String.format(
-                                Locale.US,
-                                "SMART: лучшие score mvp=%.2f blue=%.2f start=%.2f",
-                                scanResult.bestScoreMvp.coerceAtLeast(0f),
-                                scanResult.bestScoreBlue.coerceAtLeast(0f),
-                                scanResult.bestScoreStart.coerceAtLeast(0f)
-                            )
-                            EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, scoreStr)
-                        }
-
-                        // Проверка таймаута 5 минут без совпадений
-                        val elapsed = System.currentTimeMillis() - lastMatchTime
-                        if (elapsed >= timeout5Min) {
-                            EventLogManager.log(
-                                EventLogManager.TAG_AUTO_CLICKER,
-                                "SMART: экран не распознан",
-                                isError = true
-                            )
-                            showUnrecognizedScreenNotification()
-                            stop()
-                            break
-                        }
-
-                        _currentAction.value = "Умный режим: ожидание..."
-                        _nextAction.value = "Следующий снимок через 2с"
-                        delay(2000L)
-                    }
-                } finally {
-                    screenshot.recycle()
-                }
-            } else {
-                // Если снимок не удалось сделать
-                val elapsed = System.currentTimeMillis() - lastMatchTime
-                if (elapsed >= timeout5Min) {
+                val service = AccessibilityServiceHolder.service.value
+                if (service == null) {
                     EventLogManager.log(
                         EventLogManager.TAG_AUTO_CLICKER,
-                        "SMART: экран не распознан",
+                        "ERROR: AccessibilityService unavailable. Сервис отключен.",
                         isError = true
                     )
-                    showUnrecognizedScreenNotification()
-                    stop()
-                    break
+                    EventLogManager.log(
+                        EventLogManager.TAG_AUTO_CLICKER,
+                        "SMART: остановка, причина: сервис доступности отключён"
+                    )
+                    resetState()
+                    clearScreensDir()
+                    return
                 }
+
+                _currentAction.value = "Умный режим: анализ экрана..."
+                _nextAction.value = "Поиск кнопок"
+
+                val screenshot = service.takeScreenshotBitmap()
+                if (screenshot != null) {
+                    try {
+                        if (!hasLoggedScreenSize) {
+                            hasLoggedScreenSize = true
+                            EventLogManager.log(
+                                EventLogManager.TAG_AUTO_CLICKER,
+                                "SMART: размер снимка ${screenshot.width}x${screenshot.height}"
+                            )
+                        }
+
+                        // Отладка: сохранение последних 3 снимков
+                        val settings = settingsRepository.getLatestSettings()
+                        if (settings.isDebugScreenshots) {
+                            saveDebugScreenshot(screenshot)
+                        }
+
+                        // Поиск шаблонов в порядке приоритета
+                        val scanResult = findMatchInScreenshot(screenshot)
+                        val match = scanResult.match
+
+                        if (match != null) {
+                            unmatchedPassCount = 0
+                            lastMatchTime = System.currentTimeMillis()
+                            val logText = "SMART: найдено ${match.name}, тап (${match.clickX.toInt()}, ${match.clickY.toInt()})"
+                            EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, logText)
+
+                            _currentAction.value = "Нажатие ${match.name}..."
+                            _lastAction.value = "${match.name} (${match.clickX.toInt()}, ${match.clickY.toInt()})"
+
+                            performTapWithHooks(match.clickX, match.clickY)
+
+                            val pauseMs = if (match.isContinue) 1500L else 4000L
+                            _nextAction.value = "Пауза ${pauseMs / 1000f}с"
+                            delay(pauseMs)
+                        } else {
+                            unmatchedPassCount++
+                            if (unmatchedPassCount % 3 == 0) {
+                                val scoreStr = String.format(
+                                    Locale.US,
+                                    "SMART: лучшие score mvp=%.2f blue=%.2f start=%.2f",
+                                    scanResult.bestScoreMvp.coerceAtLeast(0f),
+                                    scanResult.bestScoreBlue.coerceAtLeast(0f),
+                                    scanResult.bestScoreStart.coerceAtLeast(0f)
+                                )
+                                EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, scoreStr)
+                            }
+
+                            // Проверка таймаута 5 минут без совпадений
+                            val elapsed = System.currentTimeMillis() - lastMatchTime
+                            if (elapsed >= timeout5Min) {
+                                EventLogManager.log(
+                                    EventLogManager.TAG_AUTO_CLICKER,
+                                    "SMART: экран не распознан",
+                                    isError = true
+                                )
+                                EventLogManager.log(
+                                    EventLogManager.TAG_AUTO_CLICKER,
+                                    "SMART: остановка, причина: 5 минут без совпадений"
+                                )
+                                showUnrecognizedScreenNotification()
+                                resetState()
+                                clearScreensDir()
+                                return
+                            }
+
+                            _currentAction.value = "Умный режим: ожидание..."
+                            _nextAction.value = "Следующий снимок через 2с"
+                            delay(2000L)
+                        }
+                    } finally {
+                        screenshot.recycle()
+                    }
+                } else {
+                    // Если снимок не удалось сделать
+                    val elapsed = System.currentTimeMillis() - lastMatchTime
+                    if (elapsed >= timeout5Min) {
+                        EventLogManager.log(
+                            EventLogManager.TAG_AUTO_CLICKER,
+                            "SMART: экран не распознан",
+                            isError = true
+                        )
+                        EventLogManager.log(
+                            EventLogManager.TAG_AUTO_CLICKER,
+                            "SMART: остановка, причина: 5 минут без совпадений"
+                        )
+                        showUnrecognizedScreenNotification()
+                        resetState()
+                        clearScreensDir()
+                        return
+                    }
+                    _currentAction.value = "Умный режим: ожидание снимка..."
+                    _nextAction.value = "Повтор через 2с"
+                    delay(2000L)
+                }
+
+                // Сброс счетчика последовательных ошибок при успехе
+                consecutiveErrors = 0
+
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                consecutiveErrors++
+                val projectTrace = t.stackTrace.firstOrNull { it.className.startsWith("com.example.autoclicker") }
+                    ?: t.stackTrace.firstOrNull()
+                val traceStr = projectTrace?.toString() ?: "unknown"
+                val errName = t.javaClass.simpleName
+                val errMsg = t.message ?: "нет сообщения"
+
+                _currentAction.value = "Ошибка: $errMsg"
+
+                EventLogManager.log(
+                    EventLogManager.TAG_AUTO_CLICKER,
+                    "SMART: ОШИБКА в цикле: $errName: $errMsg @ $traceStr",
+                    isError = true
+                )
+
+                if (consecutiveErrors >= 10) {
+                    EventLogManager.log(
+                        EventLogManager.TAG_AUTO_CLICKER,
+                        "SMART: слишком много ошибок подряд",
+                        isError = true
+                    )
+                    EventLogManager.log(
+                        EventLogManager.TAG_AUTO_CLICKER,
+                        "SMART: остановка, причина: ошибки"
+                    )
+                    resetState()
+                    clearScreensDir()
+                    return
+                }
+
                 delay(2000L)
             }
         }

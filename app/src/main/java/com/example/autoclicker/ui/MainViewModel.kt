@@ -128,10 +128,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun startCycle() {
         val currentSettings = settingsRepo.getLatestSettings()
         if (currentSettings.isSmartMode) {
-            cycleController.stop()
             smartEngine.start()
         } else {
-            smartEngine.stop()
             cycleController.start()
         }
     }

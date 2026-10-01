@@ -58,10 +58,8 @@ class AutoClickForegroundService : Service() {
             ACTION_START -> {
                 val settings = settingsRepo.getLatestSettings()
                 if (settings.isSmartMode) {
-                    cycleController.stop()
                     smartEngine.start()
                 } else {
-                    smartEngine.stop()
                     cycleController.start()
                 }
             }

@@ -550,15 +550,15 @@ class FloatingOverlayService : Service(), TapHooks {
             layoutParams = lp
             setOnClickListener {
                 val s = settingsRepo.getLatestSettings()
-                if (s.isSmartMode) {
-                    cycleController.stop()
+                val started = if (s.isSmartMode) {
                     smartEngine.start()
                 } else {
-                    smartEngine.stop()
                     cycleController.start()
                 }
-                // При нажатии START панель автоматически сворачивается (Requirement Е)
-                setMode(minimized = true)
+                if (started) {
+                    // При нажатии START панель автоматически сворачивается (Requirement Е)
+                    setMode(minimized = true)
+                }
             }
         }
 
