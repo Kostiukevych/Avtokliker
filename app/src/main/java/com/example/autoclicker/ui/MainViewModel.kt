@@ -11,6 +11,7 @@ import com.example.autoclicker.engine.CycleController
 import com.example.autoclicker.engine.CycleStatus
 import com.example.autoclicker.engine.GestureExecutor
 import com.example.autoclicker.engine.SmartEngine
+import com.example.autoclicker.engine.SwipeController
 import com.example.autoclicker.service.AccessibilityServiceHolder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -26,23 +27,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val gestureExecutor = GestureExecutor()
     private val cycleController = CycleController.getInstance(gestureExecutor, settingsRepo)
     private val smartEngine = SmartEngine.getInstance(application, gestureExecutor, settingsRepo)
+    private val swipeController = SwipeController.getInstance(gestureExecutor, settingsRepo)
+    private val macroController = com.example.autoclicker.engine.MacroController.getInstance(gestureExecutor, settingsRepo)
 
     val settings: StateFlow<ClickerSettings> = settingsRepo.settings
     val logs: StateFlow<List<String>> = EventLogManager.logs
+    val isMacroRunning: StateFlow<Boolean> = macroController.isRunning
 
     val cycleStatus: StateFlow<CycleStatus> = combine(
         cycleController.status,
-        smartEngine.status
-    ) { cStatus: CycleStatus, sStatus: CycleStatus ->
-        if (sStatus != CycleStatus.STOPPED) sStatus else cStatus
+        smartEngine.status,
+        swipeController.isRunning,
+        macroController.isRunning
+    ) { cStatus: CycleStatus, sStatus: CycleStatus, swipeRunning: Boolean, macroRunning: Boolean ->
+        when {
+            sStatus != CycleStatus.STOPPED -> sStatus
+            cStatus != CycleStatus.STOPPED -> cStatus
+            swipeRunning || macroRunning -> CycleStatus.RUNNING
+            else -> CycleStatus.STOPPED
+        }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), CycleStatus.STOPPED)
 
     val currentAction: StateFlow<String> = combine(
         cycleController.currentAction,
         smartEngine.currentAction,
-        smartEngine.status
-    ) { cAct: String, sAct: String, sStatus: CycleStatus ->
-        if (sStatus != CycleStatus.STOPPED) sAct else cAct
+        smartEngine.status,
+        swipeController.isRunning,
+        macroController.isRunning
+    ) { cAct: String, sAct: String, sStatus: CycleStatus, swipeRunning: Boolean, macroRunning: Boolean ->
+        when {
+            macroRunning -> "Воспроизведение макроса"
+            sStatus != CycleStatus.STOPPED -> sAct
+            cAct != "Остановлен" -> cAct
+            swipeRunning -> "Свайпы активны"
+            else -> "Остановлен"
+        }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "Остановлен")
 
     val lastAction: StateFlow<String> = combine(
@@ -127,6 +146,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startCycle() {
         val currentSettings = settingsRepo.getLatestSettings()
+        if (currentSettings.isSwipesEnabled) {
+            swipeController.start()
+        }
         if (currentSettings.isSmartMode) {
             smartEngine.start()
         } else {
@@ -135,8 +157,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun stopCycle() {
+        macroController.stop()
+        swipeController.stop()
         smartEngine.stop()
         cycleController.stop()
+    }
+
+    fun startMacro() {
+        val currentSettings = settingsRepo.getLatestSettings()
+        macroController.start(currentSettings.macroRepeatCount, currentSettings.macroIntervalSec)
+    }
+
+    fun stopMacro() {
+        macroController.stop()
+    }
+
+    fun clearMacro() {
+        settingsRepo.clearMacro()
+    }
+
+    fun updateMacroConfig(repeatCount: Int, intervalSec: Int) {
+        settingsRepo.updateMacroConfig(repeatCount, intervalSec)
+    }
+
+    fun updateSwipesMasterEnabled(enabled: Boolean) {
+        settingsRepo.updateSwipesMasterEnabled(enabled)
+    }
+
+    fun updateSwipeConfig(id: Int, enabled: Boolean, durationMs: Long, intervalSec: Int) {
+        settingsRepo.updateSwipeConfig(id, enabled, durationMs, intervalSec)
+    }
+
+    fun testSwipe(swipeId: Int) {
+        swipeController.testSwipe(swipeId)
     }
 
     fun testClick(pointId: Int) {

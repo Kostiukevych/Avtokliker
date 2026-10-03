@@ -167,13 +167,26 @@ class PointsVisualOverlayView(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // 1. Рисуем постоянные метки точек P1, P2, P3
+        // 1. Рисуем постоянные метки точек (1..10)
         if (showPoints) {
             val settings = currentSettings
             if (settings != null) {
-                drawPointMarker(canvas, settings.point1, 1, Color.parseColor("#00E5FF"))
-                drawPointMarker(canvas, settings.point2, 2, Color.parseColor("#FFAB00"))
-                drawPointMarker(canvas, settings.point3, 3, Color.parseColor("#00E676"))
+                val pointColors = intArrayOf(
+                    Color.parseColor("#00E5FF"), // 1
+                    Color.parseColor("#FFAB00"), // 2
+                    Color.parseColor("#00E676"), // 3
+                    Color.parseColor("#E040FB"), // 4
+                    Color.parseColor("#FF6E40"), // 5
+                    Color.parseColor("#40C4FF"), // 6
+                    Color.parseColor("#FFD740"), // 7
+                    Color.parseColor("#B388FF"), // 8
+                    Color.parseColor("#69F0AE"), // 9
+                    Color.parseColor("#FF5252")  // 10
+                )
+                for (point in settings.allPoints) {
+                    val colorIndex = (point.id - 1).coerceIn(0, pointColors.size - 1)
+                    drawPointMarker(canvas, point, point.id, pointColors[colorIndex])
+                }
             }
         }
 

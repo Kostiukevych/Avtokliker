@@ -1,5 +1,6 @@
 package com.example.autoclicker.service
 
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.app.Service
@@ -16,66 +17,62 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.view.animation.LinearInterpolator
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.Switch
 import android.widget.TextView
-import android.widget.Toast
 import com.example.autoclicker.MainActivity
-import com.example.autoclicker.data.ClickPoint
 import com.example.autoclicker.data.ClickerSettings
 import com.example.autoclicker.data.EventLogManager
 import com.example.autoclicker.data.SettingsRepository
+import com.example.autoclicker.data.SmartConfigManager
+import com.example.autoclicker.data.SwipeAction
 import com.example.autoclicker.engine.CycleController
 import com.example.autoclicker.engine.CycleStatus
 import com.example.autoclicker.engine.GestureExecutor
+import com.example.autoclicker.engine.MacroController
+import com.example.autoclicker.engine.SmartEngine
+import com.example.autoclicker.engine.SwipeController
 import com.example.autoclicker.engine.TapHooks
+import com.example.autoclicker.ui.theme.NeonTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import kotlin.math.abs
 
 /**
- * Плавающий оверлей для работы поверх игр (включая PUBG Mobile).
- *
- * Режимы:
- * 1. Свернутый (MINIMIZED) — маленькая перетаскиваемая круглая кнопка [ ▶ ] / [ ■ ].
- *    По умолчанию стартует в свернутом виде. Позиция запоминается.
- * 2. Развернутый (EXPANDED) — полноценная панель управления:
- *    - Таймер цикла со степпером «−» / «+» (1..15 мин).
- *    - Три строки Point 1 / Point 2 / Point 3 с координатами, «Установить», «Тест», вкл/выкл.
- *    - Кнопки START и STOP, статус, обратный отсчет, следующее действие.
- *    - Кнопка «Показать/скрыть точки».
- *    - Предупреждение о перекрытии точек панелью.
- *    - Строка последнего нажатия с результатом.
- *    - Кнопка «Закрыть AutoClicker» в аварийном меню.
- * 3. Реализует TapHooks (beforeTap / afterTap) для временного снятия касаний и показа анимации.
+ * Плавающий оверлей в стиле liquid-glass-neon:
+ * - Свёрнутая кнопка: перетаскиваемая стеклянная таблетка с неоновым свечением.
+ * - Компактная развёрнутая панель (не шире 85% и не выше 60% экрана):
+ *   - Заголовок «Автокликер» с «—» и «✕»
+ *   - Компактный статус (STATUS, NEXT, TIMER, последнее нажатие)
+ *   - Кнопки START и STOP
+ *   - Ряд кнопок: [Точки] [Свайпы] [Умный] [Ещё]
+ * - Отдельные окна настроек SettingsPopupWindow (TYPE_APPLICATION_OVERLAY)
+ * - Анимация неона через ValueAnimator (36с, на паузе при свёрнутой панели)
  */
-class FloatingOverlayService : Service(), TapHooks {
+class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callbacks {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var windowManager: WindowManager
     private lateinit var settingsRepo: SettingsRepository
+    private lateinit var configManager: SmartConfigManager
     private lateinit var cycleController: CycleController
-    private lateinit var smartEngine: com.example.autoclicker.engine.SmartEngine
+    private lateinit var smartEngine: SmartEngine
+    private lateinit var swipeController: SwipeController
+    private lateinit var macroController: MacroController
     private val gestureExecutor = GestureExecutor()
 
     private var overlayParams: WindowManager.LayoutParams? = null
     private var rootContainer: FrameLayout? = null
 
-    // Полноэкранный оверлей постоянных меток и анимации волны
+    // Полноэкранный слой меток
     private var visualOverlay: PointsVisualOverlayView? = null
 
-    // Развернутая панель
+    // Развёрнутая компактная панель
     private lateinit var expandedLayout: LinearLayout
     private lateinit var statusText: TextView
     private lateinit var nextActionText: TextView
@@ -84,179 +81,122 @@ class FloatingOverlayService : Service(), TapHooks {
     private lateinit var overlapWarningText: TextView
     private lateinit var startBtn: Button
     private lateinit var stopBtn: Button
-    private lateinit var togglePointsBtn: Button
 
-    // Умный режим
-    private lateinit var smartModeSwitch: Switch
-    private lateinit var debugScreenshotsSwitch: Switch
-    private lateinit var smartModeHintText: TextView
+    // Кнопки открытия окон
+    private lateinit var btnPoints: Button
+    private lateinit var btnSwipes: Button
+    private lateinit var btnSmart: Button
+    private lateinit var btnMore: Button
 
-    // Степпер таймера
-    private lateinit var timerValueText: TextView
-
-    // Строки точек
-    private lateinit var p1CoordsText: TextView
-    private lateinit var p1Switch: Switch
-    private lateinit var p2CoordsText: TextView
-    private lateinit var p2Switch: Switch
-    private lateinit var p3CoordsText: TextView
-    private lateinit var p3Switch: Switch
-
-    // Свернутая плавающая кнопка
+    // Свёрнутая кнопка
     private lateinit var floatingBadgeButton: Button
+
+    // Отдельное окно настроек
+    private lateinit var popupWindow: SettingsPopupWindow
 
     private var isMinimized = true
     private var activeCalibrationView: CalibrationOverlayView? = null
+
+    // Неоновый аниматор: плавный перебор оттенка за 36 секунд
+    private var neonAnimator: ValueAnimator? = null
 
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         settingsRepo = SettingsRepository.getInstance(applicationContext)
+        configManager = SmartConfigManager.getInstance(applicationContext)
         cycleController = CycleController.getInstance(gestureExecutor, settingsRepo)
         cycleController.tapHooks = this
-        smartEngine = com.example.autoclicker.engine.SmartEngine.getInstance(applicationContext, gestureExecutor, settingsRepo)
+        smartEngine = SmartEngine.getInstance(applicationContext, gestureExecutor, settingsRepo)
         smartEngine.tapHooks = this
+        swipeController = SwipeController.getInstance(gestureExecutor, settingsRepo)
+        macroController = MacroController.getInstance(gestureExecutor, settingsRepo)
 
-        // 1. Создаем полноэкранный слой постоянных меток точек и обратной связи
+        popupWindow = SettingsPopupWindow(
+            context = this,
+            windowManager = windowManager,
+            settingsRepo = settingsRepo,
+            configManager = configManager,
+            cycleController = cycleController,
+            smartEngine = smartEngine,
+            swipeController = swipeController,
+            macroController = macroController,
+            callbacks = this
+        )
+
+        // Полноэкранный слой меток точек
         visualOverlay = PointsVisualOverlayView(this).apply {
             attachToWindow()
             updateSettings(settingsRepo.getLatestSettings())
         }
 
-        // 2. Создаем плавающее окно
+        setupNeonAnimator()
         createOverlay()
         observeControllerState()
         observeSettingsChanges()
 
-        EventLogManager.log(EventLogManager.TAG_OVERLAY, "FloatingOverlayService запущен (свернут)")
+        EventLogManager.log(EventLogManager.TAG_OVERLAY, "FloatingOverlayService запущен (свёрнут)")
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        AutoClickForegroundService.start(applicationContext)
-        return START_STICKY
-    }
-
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        super.onTaskRemoved(rootIntent)
-        shutdownAllWindowsAndServices()
-    }
-
-    override fun onBind(intent: Intent?): IBinder? = null
-
-    override fun onDestroy() {
-        shutdownAllWindowsAndServices()
-        super.onDestroy()
-    }
-
-    private fun shutdownAllWindowsAndServices() {
-        smartEngine.tapHooks = null
-        smartEngine.stop()
-        cycleController.tapHooks = null
-        cycleController.stop()
-        activeCalibrationView?.dismiss()
-        activeCalibrationView = null
-        visualOverlay?.cancelAnimations()
-        visualOverlay?.detachFromWindow()
-        visualOverlay = null
-        removeOverlay()
-        serviceScope.cancel()
-        try {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } catch (_: Exception) {}
-        stopSelf()
-        EventLogManager.log(EventLogManager.TAG_OVERLAY, "FloatingOverlayService остановлен")
-    }
-
-    // --- Реализация TapHooks (Requirement Д и Е) ---
-
-    override suspend fun beforeTap(pointId: Int, x: Float, y: Float, tapIndex: Int, totalTaps: Int) {
-        // Делаем плавающую кнопку и панель сквозными (FLAG_NOT_TOUCHABLE) перед кликом
-        withContext(Dispatchers.Main) {
-            makeOverlayNonTouchable(true)
-        }
-        delay(60L)
-    }
-
-    override suspend fun afterTap(pointId: Int, x: Float, y: Float, success: Boolean, tapIndex: Int, totalTaps: Int) {
-        // Запуск анимации волны расширяющегося кольца в точке клика
-        withContext(Dispatchers.Main) {
-            visualOverlay?.showTapRipple(pointId, x, y, success, tapIndex, totalTaps)
-
-            val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-            val statusStr = if (success) "OK" else "ERROR"
-            val text = "Последнее нажатие: P$pointId (${x.toInt()}, ${y.toInt()}) $statusStr, $timeStr"
-            lastTapText.text = text
-            lastTapText.setTextColor(if (success) Color.parseColor("#00E676") else Color.parseColor("#FF5252"))
-        }
-
-        // Небольшой запас 150 мс перед возвратом кликабельности панели
-        delay(150L)
-        withContext(Dispatchers.Main) {
-            makeOverlayNonTouchable(false)
+    private fun setupNeonAnimator() {
+        neonAnimator = ValueAnimator.ofFloat(0f, 360f).apply {
+            duration = 36000L
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.RESTART
+            interpolator = LinearInterpolator()
+            addUpdateListener { anim ->
+                val hue = anim.animatedValue as Float
+                NeonTheme.currentHue = hue
+                updateNeonBorders()
+            }
         }
     }
 
-    private fun makeOverlayNonTouchable(nonTouchable: Boolean) {
-        val params = overlayParams ?: return
-        val root = rootContainer ?: return
-        if (nonTouchable) {
-            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        } else {
-            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+    private fun updateNeonBorders() {
+        val strokeColor = NeonTheme.getBorderColorInt()
+        if (::floatingBadgeButton.isInitialized) {
+            val bg = floatingBadgeButton.background as? GradientDrawable
+            bg?.setStroke(dpToPx(2), strokeColor)
         }
-        try {
-            windowManager.updateViewLayout(root, params)
-        } catch (_: Exception) {}
+        if (::expandedLayout.isInitialized) {
+            val bg = expandedLayout.background as? GradientDrawable
+            bg?.setStroke(dpToPx(2), strokeColor)
+        }
+        popupWindow.updateNeonColor()
     }
 
-    private fun removeOverlay() {
-        rootContainer?.let {
-            try {
-                windowManager.removeView(it)
-            } catch (_: Exception) {}
-        }
-        rootContainer = null
-    }
-
-    @SuppressLint("ClickableViewAccessibility")
     private fun createOverlay() {
         val settings = settingsRepo.getLatestSettings()
+        val (sw, sh) = screenSize()
 
-        val layoutType = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-
-        val flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        val initialX = settings.overlayX.coerceIn(0, sw - dpToPx(80))
+        val initialY = settings.overlayY.coerceIn(0, sh - dpToPx(80))
 
         overlayParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
-            layoutType,
-            flags,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = settings.overlayX.coerceAtLeast(20)
-            y = settings.overlayY.coerceAtLeast(50)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-            }
+            x = initialX
+            y = initialY
         }
 
-        rootContainer = FrameLayout(this)
+        rootContainer = FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+        }
 
-        // 1. Создаем развернутую панель
-        createExpandedPanel()
-
-        // 2. Создаем маленькую плавающую кнопку
         createMinimizedBadge()
+        createExpandedPanel()
 
         rootContainer?.addView(expandedLayout)
         rootContainer?.addView(floatingBadgeButton)
 
-        // Сервис стартует в СВЕРНУТОМ виде (Requirement А)
         setMode(minimized = true)
 
         try {
@@ -264,7 +204,7 @@ class FloatingOverlayService : Service(), TapHooks {
         } catch (e: Exception) {
             EventLogManager.log(
                 EventLogManager.TAG_OVERLAY,
-                "ERROR: Не удалось добавить оверлей: ${e.message}",
+                "ERROR: не удалось добавить плавающий оверлей: ${e.message}",
                 isError = true
             )
         }
@@ -273,31 +213,22 @@ class FloatingOverlayService : Service(), TapHooks {
     private fun setMode(minimized: Boolean) {
         isMinimized = minimized
         if (minimized) {
+            neonAnimator?.pause()
+            popupWindow.dismiss()
             expandedLayout.visibility = View.GONE
             floatingBadgeButton.visibility = View.VISIBLE
         } else {
-            expandedLayout.visibility = View.VISIBLE
             floatingBadgeButton.visibility = View.GONE
-            refreshPointsUi()
+            expandedLayout.visibility = View.VISIBLE
+            if (neonAnimator?.isPaused == true) neonAnimator?.resume() else neonAnimator?.start()
             checkOverlapWarning()
         }
-    }
-
-    private fun showCloseAutoClickerDialog() {
-        AlertDialog.Builder(this)
-            .setTitle("Закрыть AutoClicker")
-            .setPositiveButton("Закрыть") { _, _ ->
-                shutdownAllWindowsAndServices()
-                AutoClickForegroundService.stop(applicationContext)
-            }
-            .setNegativeButton("Отмена", null)
-            .show()
     }
 
     @SuppressLint("ClickableViewAccessibility")
     private fun createMinimizedBadge() {
         floatingBadgeButton = Button(this).apply {
-            val sizePx = dpToPx(50)
+            val sizePx = dpToPx(52)
             layoutParams = FrameLayout.LayoutParams(sizePx, sizePx)
             text = "▶"
             textSize = 20f
@@ -343,7 +274,6 @@ class FloatingOverlayService : Service(), TapHooks {
                     }
                     MotionEvent.ACTION_UP -> {
                         if (isClick) {
-                            // Разворачиваем панель
                             setMode(minimized = false)
                         } else {
                             settingsRepo.updateOverlayPosition(params.x, params.y)
@@ -358,54 +288,39 @@ class FloatingOverlayService : Service(), TapHooks {
 
     @SuppressLint("ClickableViewAccessibility")
     private fun createExpandedPanel() {
-        val panelWidth = dpToPx(280)
+        val (sw, sh) = screenSize()
+        val panelWidth = (sw * 0.82f).toInt().coerceIn(dpToPx(250), dpToPx(320))
+        val maxPanelHeight = (sh * 0.60f).toInt()
+
         expandedLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = FrameLayout.LayoutParams(panelWidth, FrameLayout.LayoutParams.WRAP_CONTENT)
             background = createPanelBg()
-            setPadding(dpToPx(12), dpToPx(8), dpToPx(12), dpToPx(12))
+            setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(12))
             elevation = dpToPx(10).toFloat()
         }
 
-        // 1. Шапка панели (Заголовок, переключатель видимости точек, сворачивание)
+        // 1. Шапка панели: «Автокликер» с «—» и «✕»
         val headerLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dpToPx(4))
+            setPadding(0, 0, 0, dpToPx(6))
         }
 
         val titleText = TextView(this).apply {
-            text = "AUTO CLICKER"
+            text = "Автокликер"
             setTextColor(Color.WHITE)
-            textSize = 13f
+            textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-
-        togglePointsBtn = Button(this).apply {
-            text = "👁 Метки"
-            textSize = 10f
-            setTextColor(Color.parseColor("#80D8FF"))
-            background = createButtonBg(Color.parseColor("#263238"), dpToPx(6))
-            val lp = LinearLayout.LayoutParams(dpToPx(68), dpToPx(26)).apply {
-                marginEnd = dpToPx(4)
-            }
-            layoutParams = lp
-            setPadding(0, 0, 0, 0)
-            setOnClickListener {
-                val overlay = visualOverlay ?: return@setOnClickListener
-                overlay.showPoints = !overlay.showPoints
-                text = if (overlay.showPoints) "👁 Метки" else "🙈 Скрыты"
-                setTextColor(if (overlay.showPoints) Color.parseColor("#80D8FF") else Color.parseColor("#90A4AE"))
-            }
         }
 
         val minimizeBtn = Button(this).apply {
             text = "—"
             textSize = 14f
-            setTextColor(Color.parseColor("#B0BEC5"))
-            background = createButtonBg(Color.parseColor("#33455A64"), dpToPx(6))
-            val btnSize = dpToPx(26)
+            setTextColor(Color.WHITE)
+            background = createButtonBg(Color.parseColor("#33FFFFFF"), dpToPx(8))
+            val btnSize = dpToPx(28)
             layoutParams = LinearLayout.LayoutParams(btnSize, btnSize)
             setPadding(0, 0, 0, 0)
             setOnClickListener {
@@ -416,11 +331,11 @@ class FloatingOverlayService : Service(), TapHooks {
         val closeBtn = Button(this).apply {
             text = "✕"
             textSize = 12f
-            setTextColor(Color.parseColor("#B0BEC5"))
-            background = createButtonBg(Color.parseColor("#33455A64"), dpToPx(6))
-            val btnSize = dpToPx(26)
+            setTextColor(Color.WHITE)
+            background = createButtonBg(Color.parseColor("#33FFFFFF"), dpToPx(8))
+            val btnSize = dpToPx(28)
             val lp = LinearLayout.LayoutParams(btnSize, btnSize).apply {
-                marginStart = dpToPx(4)
+                marginStart = dpToPx(6)
             }
             layoutParams = lp
             setPadding(0, 0, 0, 0)
@@ -431,7 +346,6 @@ class FloatingOverlayService : Service(), TapHooks {
         }
 
         headerLayout.addView(titleText)
-        headerLayout.addView(togglePointsBtn)
         headerLayout.addView(minimizeBtn)
         headerLayout.addView(closeBtn)
         expandedLayout.addView(headerLayout)
@@ -444,6 +358,7 @@ class FloatingOverlayService : Service(), TapHooks {
 
         headerLayout.setOnTouchListener { _, event ->
             val params = overlayParams ?: return@setOnTouchListener false
+            val (currentSw, currentSh) = screenSize()
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     initialX = params.x
@@ -453,8 +368,10 @@ class FloatingOverlayService : Service(), TapHooks {
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    params.x = initialX + (event.rawX - initialTouchX).toInt()
-                    params.y = initialY + (event.rawY - initialTouchY).toInt()
+                    val targetX = initialX + (event.rawX - initialTouchX).toInt()
+                    val targetY = initialY + (event.rawY - initialTouchY).toInt()
+                    params.x = targetX.coerceIn(0, (currentSw - dpToPx(60)).coerceAtLeast(0))
+                    params.y = targetY.coerceIn(0, (currentSh - dpToPx(80)).coerceAtLeast(0))
                     try {
                         windowManager.updateViewLayout(rootContainer, params)
                     } catch (_: Exception) {}
@@ -470,72 +387,56 @@ class FloatingOverlayService : Service(), TapHooks {
             }
         }
 
-        // 2. Прокручиваемое содержимое панели
-        val scrollView = ScrollView(this).apply {
-            isVerticalScrollBarEnabled = false
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        }
-
-        val scrollContent = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-
-        // Предупреждение о перекрытии точек панелью
+        // Предупреждение о перекрытии
         overlapWarningText = TextView(this).apply {
             text = ""
             setTextColor(Color.parseColor("#FFD54F"))
             textSize = 10f
             typeface = Typeface.DEFAULT_BOLD
             visibility = View.GONE
-            setPadding(0, dpToPx(2), 0, dpToPx(4))
+            setPadding(0, 0, 0, dpToPx(2))
         }
-        scrollContent.addView(overlapWarningText)
+        expandedLayout.addView(overlapWarningText)
 
-        // STATUS
+        // 2. Строки статуса (компактно)
         statusText = TextView(this).apply {
             text = "STATUS: STOPPED"
             setTextColor(Color.parseColor("#FF5252"))
             textSize = 12f
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, dpToPx(2), 0, dpToPx(1))
+            setPadding(0, dpToPx(1), 0, dpToPx(1))
         }
-        scrollContent.addView(statusText)
+        expandedLayout.addView(statusText)
 
-        // NEXT ACTION
         nextActionText = TextView(this).apply {
             text = "NEXT: --"
             setTextColor(Color.parseColor("#64B5F6"))
             textSize = 11f
             setPadding(0, 0, 0, dpToPx(1))
         }
-        scrollContent.addView(nextActionText)
+        expandedLayout.addView(nextActionText)
 
-        // TIMER
         timerText = TextView(this).apply {
             text = "TIMER: --"
             setTextColor(Color.parseColor("#FFD54F"))
-            textSize = 13f
+            textSize = 12f
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, dpToPx(1), 0, dpToPx(1))
+            setPadding(0, 0, 0, dpToPx(1))
         }
-        scrollContent.addView(timerText)
+        expandedLayout.addView(timerText)
 
-        // LAST TAP FEEDBACK
         lastTapText = TextView(this).apply {
             text = "Последнее нажатие: --"
             setTextColor(Color.parseColor("#B0BEC5"))
             textSize = 10f
             setPadding(0, 0, 0, dpToPx(6))
         }
-        scrollContent.addView(lastTapText)
+        expandedLayout.addView(lastTapText)
 
-        // Кнопки START и STOP
+        // 3. Ряд кнопок START / STOP
         val controlRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 0, 0, dpToPx(6))
+            setPadding(0, 0, 0, dpToPx(8))
         }
 
         startBtn = Button(this).apply {
@@ -544,19 +445,21 @@ class FloatingOverlayService : Service(), TapHooks {
             textSize = 12f
             typeface = Typeface.DEFAULT_BOLD
             background = createButtonBg(Color.parseColor("#00C853"), dpToPx(8))
-            val lp = LinearLayout.LayoutParams(0, dpToPx(36), 1f).apply {
-                marginEnd = dpToPx(4)
-            }
+            val lp = LinearLayout.LayoutParams(0, dpToPx(38), 1f).apply { marginEnd = dpToPx(4) }
             layoutParams = lp
             setOnClickListener {
                 val s = settingsRepo.getLatestSettings()
+                var anyStarted = false
+                if (s.isSwipesEnabled) {
+                    val swipeStarted = swipeController.start()
+                    if (swipeStarted) anyStarted = true
+                }
                 val started = if (s.isSmartMode) {
                     smartEngine.start()
                 } else {
                     cycleController.start()
                 }
-                if (started) {
-                    // При нажатии START панель автоматически сворачивается (Requirement Е)
+                if (started || anyStarted) {
                     setMode(minimized = true)
                 }
             }
@@ -570,11 +473,11 @@ class FloatingOverlayService : Service(), TapHooks {
             background = createButtonBg(Color.parseColor("#37474F"), dpToPx(8))
             isEnabled = false
             alpha = 0.5f
-            val lp = LinearLayout.LayoutParams(0, dpToPx(36), 1f).apply {
-                marginStart = dpToPx(4)
-            }
+            val lp = LinearLayout.LayoutParams(0, dpToPx(38), 1f).apply { marginStart = dpToPx(4) }
             layoutParams = lp
             setOnClickListener {
+                macroController.stop()
+                swipeController.stop()
                 smartEngine.stop()
                 cycleController.stop()
                 visualOverlay?.cancelAnimations()
@@ -583,402 +486,190 @@ class FloatingOverlayService : Service(), TapHooks {
 
         controlRow.addView(startBtn)
         controlRow.addView(stopBtn)
-        scrollContent.addView(controlRow)
+        expandedLayout.addView(controlRow)
 
-        // РАЗДЕЛ УМНОГО РЕЖИМА (PUBG Mobile)
-        val smartCard = createSmartModeCard()
-        scrollContent.addView(smartCard)
-
-        // РАЗДЕЛ ТАЙМЕРА СО СТЕППЕРОМ «−» / «+» (Requirement Б)
-        val timerCard = createTimerStepperCard()
-        scrollContent.addView(timerCard)
-
-        // СТРОКИ POINT 1, POINT 2, POINT 3 (Requirement Б)
-        val p1Row = createPointRow(1)
-        val p2Row = createPointRow(2)
-        val p3Row = createPointRow(3)
-        scrollContent.addView(p1Row)
-        scrollContent.addView(p2Row)
-        scrollContent.addView(p3Row)
-
-        // Кнопка открыть Настройки в MainActivity
-        val appSettingsBtn = Button(this).apply {
-            text = "НАСТРОЙКИ ПРИЛОЖЕНИЯ"
-            setTextColor(Color.parseColor("#90A4AE"))
-            textSize = 10f
-            background = createButtonBg(Color.parseColor("#1C242B"), dpToPx(6))
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dpToPx(28)
-            ).apply {
-                topMargin = dpToPx(4)
-            }
-            layoutParams = lp
-            setOnClickListener {
-                openMainActivity()
-            }
-        }
-        scrollContent.addView(appSettingsBtn)
-
-        scrollView.addView(scrollContent)
-        expandedLayout.addView(scrollView)
-    }
-
-    private fun createSmartModeCard(): LinearLayout {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = createButtonBg(Color.parseColor("#1A212D"), dpToPx(6))
-            setPadding(dpToPx(8), dpToPx(6), dpToPx(8), dpToPx(6))
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = dpToPx(6)
-            }
-            layoutParams = lp
-
-            // Верхний ряд: Переключатель Умного режима
-            val smartRow = LinearLayout(this@FloatingOverlayService).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-
-            val smartLabel = TextView(this@FloatingOverlayService).apply {
-                text = "Умный режим (PUBG):"
-                setTextColor(Color.WHITE)
-                textSize = 11f
-                typeface = Typeface.DEFAULT_BOLD
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            }
-            smartRow.addView(smartLabel)
-
-            val isApi30 = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
-            smartModeSwitch = Switch(this@FloatingOverlayService).apply {
-                val settings = settingsRepo.getLatestSettings()
-                isChecked = settings.isSmartMode && isApi30
-                isEnabled = isApi30
-                setOnCheckedChangeListener { _, isChecked ->
-                    settingsRepo.updateSmartMode(isChecked)
-                }
-            }
-            smartRow.addView(smartModeSwitch)
-            addView(smartRow)
-
-            smartModeHintText = TextView(this@FloatingOverlayService).apply {
-                if (!isApi30) {
-                    text = "Нужен Android 11+"
-                    setTextColor(Color.parseColor("#EF5350"))
-                } else {
-                    text = "Ищет «Продолжить» и «Начать»"
-                    setTextColor(Color.parseColor("#80D8FF"))
-                }
-                textSize = 9f
-                setPadding(0, 0, 0, dpToPx(2))
-            }
-            addView(smartModeHintText)
-
-            // Нижний ряд: Отладка (сохранение снимков)
-            val debugRow = LinearLayout(this@FloatingOverlayService).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, dpToPx(2), 0, 0)
-            }
-
-            val debugLabel = TextView(this@FloatingOverlayService).apply {
-                text = "Сохранять снимки (тест):"
-                setTextColor(Color.parseColor("#B0BEC5"))
-                textSize = 10f
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            }
-            debugRow.addView(debugLabel)
-
-            debugScreenshotsSwitch = Switch(this@FloatingOverlayService).apply {
-                val settings = settingsRepo.getLatestSettings()
-                isChecked = settings.isDebugScreenshots
-                setOnCheckedChangeListener { _, isChecked ->
-                    settingsRepo.updateDebugScreenshots(isChecked)
-                }
-            }
-            debugRow.addView(debugScreenshotsSwitch)
-            addView(debugRow)
-        }
-    }
-
-    private fun createTimerStepperCard(): LinearLayout {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = createButtonBg(Color.parseColor("#1A212D"), dpToPx(6))
-            setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4))
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = dpToPx(6)
-            }
-            layoutParams = lp
-
-            val label = TextView(this@FloatingOverlayService).apply {
-                text = "Таймер цикла:"
-                setTextColor(Color.WHITE)
-                textSize = 11f
-                typeface = Typeface.DEFAULT_BOLD
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            }
-            addView(label)
-
-            val minusBtn = Button(this@FloatingOverlayService).apply {
-                text = "−"
-                textSize = 14f
-                setTextColor(Color.WHITE)
-                background = createButtonBg(Color.parseColor("#37474F"), dpToPx(4))
-                layoutParams = LinearLayout.LayoutParams(dpToPx(28), dpToPx(26))
-                setPadding(0, 0, 0, 0)
-                setOnClickListener {
-                    val current = settingsRepo.getLatestSettings().cycleDelayMinutes
-                    if (current > 1) {
-                        settingsRepo.updateCycleDelay(current - 1)
-                    }
-                }
-            }
-            addView(minusBtn)
-
-            timerValueText = TextView(this@FloatingOverlayService).apply {
-                val delayMin = settingsRepo.getLatestSettings().cycleDelayMinutes
-                text = "$delayMin мин"
-                setTextColor(Color.parseColor("#FFD54F"))
-                textSize = 12f
-                typeface = Typeface.DEFAULT_BOLD
-                gravity = Gravity.CENTER
-                setPadding(dpToPx(6), 0, dpToPx(6), 0)
-            }
-            addView(timerValueText)
-
-            val plusBtn = Button(this@FloatingOverlayService).apply {
-                text = "+"
-                textSize = 14f
-                setTextColor(Color.WHITE)
-                background = createButtonBg(Color.parseColor("#37474F"), dpToPx(4))
-                layoutParams = LinearLayout.LayoutParams(dpToPx(28), dpToPx(26))
-                setPadding(0, 0, 0, 0)
-                setOnClickListener {
-                    val current = settingsRepo.getLatestSettings().cycleDelayMinutes
-                    if (current < 15) {
-                        settingsRepo.updateCycleDelay(current + 1)
-                    }
-                }
-            }
-            addView(plusBtn)
-        }
-    }
-
-    private fun createPointRow(pointId: Int): LinearLayout {
-        val rowLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = createButtonBg(Color.parseColor("#151C26"), dpToPx(6))
-            setPadding(dpToPx(8), dpToPx(5), dpToPx(8), dpToPx(5))
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = dpToPx(4)
-            }
-            layoutParams = lp
-        }
-
-        // Верхний ряд: Заголовок точки и Свитч вкл/выкл
-        val topRow = LinearLayout(this).apply {
+        // 4. Ряд из трёх стеклянных кнопок: «Точки», «Свайпы», «Умный режим» + кнопка «Ещё»
+        val navRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        val pointTitle = TextView(this).apply {
-            val titleColor = when (pointId) {
-                1 -> Color.parseColor("#00E5FF")
-                2 -> Color.parseColor("#FFAB00")
-                3 -> Color.parseColor("#00E676")
-                else -> Color.WHITE
-            }
-            text = "POINT $pointId"
-            setTextColor(titleColor)
+        btnPoints = createNavButton("Точки", 1.2f) {
+            togglePopupWindow(SettingsPopupWindow.WindowType.POINTS)
+        }
+        navRow.addView(btnPoints)
+
+        btnSwipes = createNavButton("Свайпы", 1.2f) {
+            togglePopupWindow(SettingsPopupWindow.WindowType.SWIPES)
+        }
+        navRow.addView(btnSwipes)
+
+        btnSmart = createNavButton("Умный", 1.2f) {
+            togglePopupWindow(SettingsPopupWindow.WindowType.SMART)
+        }
+        navRow.addView(btnSmart)
+
+        btnMore = createNavButton("Ещё", 0.9f) {
+            togglePopupWindow(SettingsPopupWindow.WindowType.MORE)
+        }
+        navRow.addView(btnMore)
+
+        expandedLayout.addView(navRow)
+    }
+
+    private fun createNavButton(label: String, weight: Float, onClick: () -> Unit): Button {
+        return Button(this).apply {
+            text = label
             textSize = 11f
-            typeface = Typeface.DEFAULT_BOLD
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        topRow.addView(pointTitle)
-
-        val switchView = Switch(this).apply {
-            val point = settingsRepo.getLatestSettings().getPointById(pointId)
-            isChecked = point.enabled
-            setOnCheckedChangeListener { _, isChecked ->
-                val p = settingsRepo.getLatestSettings().getPointById(pointId)
-                settingsRepo.updatePointConfig(pointId, isChecked, p.clickCount, p.intervalSec)
-            }
-        }
-        when (pointId) {
-            1 -> p1Switch = switchView
-            2 -> p2Switch = switchView
-            3 -> p3Switch = switchView
-        }
-        topRow.addView(switchView)
-        rowLayout.addView(topRow)
-
-        // Средний ряд: Координаты
-        val coordsView = TextView(this).apply {
-            textSize = 10f
-            typeface = Typeface.MONOSPACE
-            setPadding(0, 0, 0, dpToPx(4))
-        }
-        when (pointId) {
-            1 -> p1CoordsText = coordsView
-            2 -> p2CoordsText = coordsView
-            3 -> p3CoordsText = coordsView
-        }
-        rowLayout.addView(coordsView)
-
-        // Нижний ряд: Кнопки «Установить» и «Тест»
-        val actionsRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }
-
-        val setBtn = Button(this).apply {
-            text = "Установить"
-            textSize = 10f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
-            background = createButtonBg(Color.parseColor("#1565C0"), dpToPx(4))
-            val lp = LinearLayout.LayoutParams(0, dpToPx(28), 1f).apply {
-                marginEnd = dpToPx(4)
+            background = createButtonBg(Color.parseColor("#26FFFFFF"), dpToPx(8))
+            val lp = LinearLayout.LayoutParams(0, dpToPx(36), weight).apply {
+                marginEnd = dpToPx(3)
             }
             layoutParams = lp
-            setPadding(0, 0, 0, 0)
-            setOnClickListener {
-                startCalibration(pointId)
-            }
-        }
-
-        val testBtn = Button(this).apply {
-            text = "Тест"
-            textSize = 10f
-            setTextColor(Color.WHITE)
-            typeface = Typeface.DEFAULT_BOLD
-            background = createButtonBg(Color.parseColor("#2E7D32"), dpToPx(4))
-            val lp = LinearLayout.LayoutParams(0, dpToPx(28), 1f)
-            layoutParams = lp
-            setPadding(0, 0, 0, 0)
-            setOnClickListener {
-                cycleController.testClick(pointId)
-            }
-        }
-
-        actionsRow.addView(setBtn)
-        actionsRow.addView(testBtn)
-        rowLayout.addView(actionsRow)
-
-        return rowLayout
-    }
-
-    private fun startCalibration(pointId: Int) {
-        // Закрываем панель на время калибровки
-        setMode(minimized = true)
-        floatingBadgeButton.visibility = View.GONE // Прячем даже круглую кнопку
-
-        activeCalibrationView?.dismiss()
-        val cal = CalibrationOverlayView(
-            context = this,
-            currentPointId = pointId,
-            onCoordinateCaptured = { capturedId, x, y ->
-                Toast.makeText(
-                    this,
-                    "P$capturedId сохранён: (${x.toInt()}, ${y.toInt()})",
-                    Toast.LENGTH_SHORT
-                ).show()
-            },
-            onDismissed = {
-                activeCalibrationView = null
-                setMode(minimized = false)
-                floatingBadgeButton.visibility = View.VISIBLE
-            }
-        )
-        activeCalibrationView = cal
-        cal.show()
-
-        serviceScope.launch {
-            delay(60_000L)
-            if (activeCalibrationView === cal) {
-                cal.dismiss()
-            }
+            setPadding(dpToPx(2), 0, dpToPx(2), 0)
+            setOnClickListener { onClick() }
         }
     }
 
-    private fun refreshPointsUi() {
-        val settings = settingsRepo.getLatestSettings()
-        timerValueText.text = "${settings.cycleDelayMinutes} мин"
-
-        val isApi30 = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
-        if (::smartModeSwitch.isInitialized) {
-            smartModeSwitch.isChecked = settings.isSmartMode && isApi30
-            smartModeSwitch.isEnabled = isApi30
-        }
-        if (::debugScreenshotsSwitch.isInitialized) {
-            debugScreenshotsSwitch.isChecked = settings.isDebugScreenshots
-        }
-
-        updatePointRowUi(settings.point1, p1CoordsText, p1Switch)
-        updatePointRowUi(settings.point2, p2CoordsText, p2Switch)
-        updatePointRowUi(settings.point3, p3CoordsText, p3Switch)
-
-        visualOverlay?.updateSettings(settings)
-    }
-
-    private fun updatePointRowUi(point: ClickPoint, coordsView: TextView, switchView: Switch) {
-        switchView.isChecked = point.enabled
-        if (point.isConfigured) {
-            coordsView.text = "X=${point.x.toInt()}  Y=${point.y.toInt()}"
-            coordsView.setTextColor(Color.parseColor("#00E5FF"))
+    private fun togglePopupWindow(type: SettingsPopupWindow.WindowType) {
+        if (popupWindow.isShowing() && popupWindow.currentType == type) {
+            popupWindow.dismiss()
         } else {
-            coordsView.text = "Координаты не заданы"
-            coordsView.setTextColor(Color.parseColor("#EF5350"))
+            val p = overlayParams ?: return
+            val w = expandedLayout.width.takeIf { it > 0 } ?: dpToPx(280)
+            val h = expandedLayout.height.takeIf { it > 0 } ?: dpToPx(200)
+            popupWindow.show(type, p.x, p.y, w, h)
         }
+    }
+
+    private fun showCloseAutoClickerDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Закрыть AutoClicker")
+            .setPositiveButton("Закрыть") { _, _ ->
+                shutdownAllWindowsAndServices()
+                AutoClickForegroundService.stop(applicationContext)
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
     }
 
     private fun checkOverlapWarning() {
         val params = overlayParams ?: return
         val panelW = expandedLayout.width.takeIf { it > 0 } ?: dpToPx(280)
-        val panelH = expandedLayout.height.takeIf { it > 0 } ?: dpToPx(340)
+        val panelH = expandedLayout.height.takeIf { it > 0 } ?: dpToPx(220)
         val panelRect = Rect(params.x, params.y, params.x + panelW, params.y + panelH)
 
         val settings = settingsRepo.getLatestSettings()
         val overlapping = mutableListOf<String>()
-        if (settings.point1.isConfigured && panelRect.contains(settings.point1.x.toInt(), settings.point1.y.toInt())) {
-            overlapping.add("P1")
-        }
-        if (settings.point2.isConfigured && panelRect.contains(settings.point2.x.toInt(), settings.point2.y.toInt())) {
-            overlapping.add("P2")
-        }
-        if (settings.point3.isConfigured && panelRect.contains(settings.point3.x.toInt(), settings.point3.y.toInt())) {
-            overlapping.add("P3")
+        for (p in settings.allPoints) {
+            if (p.enabled && p.isConfigured && panelRect.contains(p.x.toInt(), p.y.toInt())) {
+                overlapping.add("P${p.id}")
+            }
         }
 
         if (overlapping.isNotEmpty()) {
             overlapWarningText.visibility = View.VISIBLE
-            overlapWarningText.text = "⚠ Внимание: ${overlapping.joinToString(", ")} перекрыта панелью!\nСверните или переместите её."
+            overlapWarningText.text = "⚠ Внимание: ${overlapping.joinToString(", ")} перекрыта панелью!"
         } else {
             overlapWarningText.visibility = View.GONE
         }
     }
 
-    private fun openMainActivity() {
+    // Callbacks from SettingsPopupWindow
+    override fun onStartPointCalibration(pointId: Int) {
+        rootContainer?.visibility = View.GONE
+        popupWindow.dismiss()
+        activeCalibrationView?.dismiss()
+
+        val overlay = CalibrationOverlayView(
+            context = this,
+            currentPointId = pointId,
+            onCoordinateCaptured = { _, _, _ -> },
+            onDismissed = {
+                activeCalibrationView = null
+                rootContainer?.visibility = View.VISIBLE
+                val p = overlayParams
+                val w = expandedLayout.width.takeIf { it > 0 } ?: dpToPx(280)
+                val h = expandedLayout.height.takeIf { it > 0 } ?: dpToPx(200)
+                popupWindow.show(
+                    SettingsPopupWindow.WindowType.POINTS,
+                    p?.x ?: 100,
+                    p?.y ?: 100,
+                    w,
+                    h
+                )
+            }
+        )
+        activeCalibrationView = overlay
+        overlay.show()
+    }
+
+    override fun onStartSwipeCalibration(swipeId: Int, isStart: Boolean) {
+        rootContainer?.visibility = View.GONE
+        popupWindow.dismiss()
+        activeCalibrationView?.dismiss()
+
+        val pseudoPointId = if (isStart) 10 + (swipeId * 2 - 1) else 10 + (swipeId * 2)
+        val overlay = CalibrationOverlayView(
+            context = this,
+            currentPointId = pseudoPointId,
+            onCoordinateCaptured = { _, x, y ->
+                val settings = settingsRepo.getLatestSettings()
+                val currentSwipe = settings.swipes.find { it.id == swipeId } ?: SwipeAction(id = swipeId)
+                if (isStart) {
+                    settingsRepo.updateSwipeCoordinates(swipeId, x, y, currentSwipe.endX, currentSwipe.endY)
+                    onStartSwipeCalibration(swipeId, false)
+                } else {
+                    settingsRepo.updateSwipeCoordinates(swipeId, currentSwipe.startX, currentSwipe.startY, x, y)
+                }
+            },
+            onDismissed = {
+                activeCalibrationView = null
+                if (!isStart) {
+                    rootContainer?.visibility = View.VISIBLE
+                    val p = overlayParams
+                    val w = expandedLayout.width.takeIf { it > 0 } ?: dpToPx(280)
+                    val h = expandedLayout.height.takeIf { it > 0 } ?: dpToPx(200)
+                    popupWindow.show(
+                        SettingsPopupWindow.WindowType.SWIPES,
+                        p?.x ?: 100,
+                        p?.y ?: 100,
+                        w,
+                        h
+                    )
+                }
+            }
+        )
+        activeCalibrationView = overlay
+        overlay.show()
+    }
+
+    override fun onOpenMainActivity() {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
         startActivity(intent)
     }
 
+    override fun onToggleVisualOverlay() {
+        val overlay = visualOverlay ?: return
+        overlay.showPoints = !overlay.showPoints
+    }
+
+    override fun onCloseService() {
+        shutdownAllWindowsAndServices()
+        AutoClickForegroundService.stop(applicationContext)
+    }
+
+    override fun onDismiss() {}
+
     private fun observeSettingsChanges() {
         serviceScope.launch {
             settingsRepo.settings.collect { settings ->
-                refreshPointsUi()
+                visualOverlay?.updateSettings(settings)
+                popupWindow.updateSettings(settings)
                 checkOverlapWarning()
             }
         }
@@ -989,17 +680,35 @@ class FloatingOverlayService : Service(), TapHooks {
             kotlinx.coroutines.flow.combine(
                 cycleController.status,
                 smartEngine.status,
-                cycleController.cycleNumber,
-                smartEngine.cycleNumber
-            ) { cStatus, sStatus, cNum, sNum ->
+                swipeController.isRunning,
+                macroController.isRunning
+            ) { cStatus: CycleStatus, sStatus: CycleStatus, swipeRunning: Boolean, macroRunning: Boolean ->
                 val isSmartActive = sStatus != CycleStatus.STOPPED
-                val status = if (isSmartActive) sStatus else cStatus
-                val cycleNum = if (isSmartActive) sNum else cNum
-                Triple(status, isSmartActive, cycleNum)
-            }.collect { (status, isSmartActive, cycleNum) ->
+                val isCycleActive = cStatus != CycleStatus.STOPPED
+                val status = when {
+                    isSmartActive -> sStatus
+                    isCycleActive -> cStatus
+                    swipeRunning || macroRunning -> CycleStatus.RUNNING
+                    else -> CycleStatus.STOPPED
+                }
+                val mode = when {
+                    macroRunning -> "MACRO"
+                    swipeRunning && !isSmartActive && !isCycleActive -> "SWIPES"
+                    isSmartActive -> "SMART"
+                    else -> "NORMAL"
+                }
+                Pair(status, mode)
+            }.collect { (status, mode) ->
+                val isSmartActive = mode == "SMART"
+                val cycleNum = if (isSmartActive) smartEngine.cycleNumber.value else cycleController.cycleNumber.value
                 val statusString = when (status) {
                     CycleStatus.STOPPED -> "STATUS: STOPPED"
-                    CycleStatus.RUNNING -> if (isSmartActive) "STATUS: SMART RUNNING" else if (cycleNum > 0) "STATUS: RUNNING (#$cycleNum)" else "STATUS: RUNNING"
+                    CycleStatus.RUNNING -> when (mode) {
+                        "SMART" -> "STATUS: SMART RUNNING"
+                        "SWIPES" -> "STATUS: SWIPES RUNNING"
+                        "MACRO" -> "STATUS: MACRO RUNNING"
+                        else -> if (cycleNum > 0) "STATUS: RUNNING (#$cycleNum)" else "STATUS: RUNNING"
+                    }
                     CycleStatus.WAITING_CYCLE -> if (cycleNum > 0) "STATUS: WAITING (#$cycleNum)" else "STATUS: WAITING"
                 }
                 statusText.text = statusString
@@ -1069,20 +778,48 @@ class FloatingOverlayService : Service(), TapHooks {
         }
     }
 
+    // TapHooks
+    override suspend fun beforeTap(pointId: Int, x: Float, y: Float, tapIndex: Int, totalTaps: Int) {
+        val loc = IntArray(2)
+        rootContainer?.getLocationOnScreen(loc)
+        val panelW = expandedLayout.width.takeIf { it > 0 } ?: dpToPx(280)
+        val panelH = expandedLayout.height.takeIf { it > 0 } ?: dpToPx(200)
+        val panelRect = Rect(loc[0], loc[1], loc[0] + panelW, loc[1] + panelH)
+
+        if (panelRect.contains(x.toInt(), y.toInt())) {
+            rootContainer?.visibility = View.GONE
+        }
+    }
+
+    override suspend fun afterTap(pointId: Int, x: Float, y: Float, success: Boolean, tapIndex: Int, totalTaps: Int) {
+        rootContainer?.visibility = View.VISIBLE
+        visualOverlay?.showTapRipple(pointId, x, y, success, tapIndex, totalTaps)
+        val timeStr = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+        val statusStr = if (success) "OK" else "FAIL"
+        lastTapText.text = "$timeStr P$pointId (${x.toInt()}, ${y.toInt()}): $statusStr ($tapIndex/$totalTaps)"
+        lastTapText.setTextColor(if (success) Color.parseColor("#00E676") else Color.parseColor("#FF5252"))
+    }
+
     private fun createPanelBg(): GradientDrawable {
         return GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = dpToPx(14).toFloat()
-            setColor(Color.parseColor("#E6121622"))
-            setStroke(dpToPx(1), Color.parseColor("#443A4560"))
+            cornerRadius = dpToPx(20).toFloat()
+            colors = intArrayOf(
+                Color.parseColor("#EE141428"),
+                Color.parseColor("#FA0A0A14")
+            )
+            setStroke(dpToPx(2), NeonTheme.getBorderColorInt())
         }
     }
 
     private fun createBadgeBg(): GradientDrawable {
         return GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            setColor(Color.parseColor("#D9161B26"))
-            setStroke(dpToPx(2), Color.parseColor("#662979FF"))
+            colors = intArrayOf(
+                Color.parseColor("#EE141428"),
+                Color.parseColor("#FA0A0A14")
+            )
+            setStroke(dpToPx(2), NeonTheme.getBorderColorInt())
         }
     }
 
@@ -1094,9 +831,52 @@ class FloatingOverlayService : Service(), TapHooks {
         }
     }
 
+    private fun screenSize(): Pair<Int, Int> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val b = windowManager.currentWindowMetrics.bounds
+            Pair(b.width(), b.height())
+        } else {
+            val m = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealMetrics(m)
+            Pair(m.widthPixels, m.heightPixels)
+        }
+    }
+
     private fun dpToPx(dp: Int): Int {
         return (dp * resources.displayMetrics.density).toInt()
     }
+
+    private fun shutdownAllWindowsAndServices() {
+        neonAnimator?.cancel()
+        popupWindow.dismiss()
+        activeCalibrationView?.dismiss()
+        visualOverlay?.detachFromWindow()
+        visualOverlay = null
+        rootContainer?.let {
+            try {
+                windowManager.removeView(it)
+            } catch (_: Exception) {}
+        }
+        rootContainer = null
+        stopSelf()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        neonAnimator?.cancel()
+        serviceScope.cancel()
+        popupWindow.dismiss()
+        activeCalibrationView?.dismiss()
+        visualOverlay?.detachFromWindow()
+        rootContainer?.let {
+            try {
+                windowManager.removeView(it)
+            } catch (_: Exception) {}
+        }
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
         fun start(context: Context) {

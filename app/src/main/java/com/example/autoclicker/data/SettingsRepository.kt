@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Репозиторий хранения настроек в SharedPreferences.
- * Сохраняет все координаты, таймеры, ориентацию и параметры точек на диск.
+ * Сохраняет все координаты, таймеры, ориентацию и параметры точек (1..10) на диск.
  */
 class SettingsRepository private constructor(val context: Context) {
 
@@ -51,6 +51,18 @@ class SettingsRepository private constructor(val context: Context) {
             intervalSec = prefs.getInt(KEY_P3_INTERVAL, 2)
         )
 
+        fun loadExtraPoint(id: Int): ClickPoint {
+            return ClickPoint(
+                id = id,
+                name = "Точка $id",
+                x = prefs.getFloat("point${id}_x", 0f),
+                y = prefs.getFloat("point${id}_y", 0f),
+                enabled = prefs.getBoolean("point${id}_enabled", false),
+                clickCount = prefs.getInt("point${id}_count", 1),
+                intervalSec = prefs.getInt("point${id}_interval", 2)
+            )
+        }
+
         val cycleDelayMinutes = prefs.getInt(KEY_CYCLE_DELAY_MINUTES, 7)
         val overlayX = prefs.getInt(KEY_OVERLAY_X, 50)
         val overlayY = prefs.getInt(KEY_OVERLAY_Y, 150)
@@ -60,10 +72,40 @@ class SettingsRepository private constructor(val context: Context) {
         val isSmartMode = prefs.getBoolean(KEY_SMART_MODE, false)
         val isDebugScreenshots = prefs.getBoolean(KEY_DEBUG_SCREENSHOTS, false)
 
+        fun loadSwipe(id: Int): SwipeAction {
+            return SwipeAction(
+                id = id,
+                startX = prefs.getFloat("swipe${id}_start_x", 0f),
+                startY = prefs.getFloat("swipe${id}_start_y", 0f),
+                endX = prefs.getFloat("swipe${id}_end_x", 0f),
+                endY = prefs.getFloat("swipe${id}_end_y", 0f),
+                durationMs = prefs.getLong("swipe${id}_duration_ms", 300L),
+                intervalSec = prefs.getInt("swipe${id}_interval_sec", 10),
+                enabled = prefs.getBoolean("swipe${id}_enabled", false)
+            )
+        }
+
+        val isSwipesEnabled = prefs.getBoolean(KEY_SWIPES_ENABLED, false)
+        val swipes = listOf(loadSwipe(1), loadSwipe(2), loadSwipe(3))
+
+        val macroJson = prefs.getString(KEY_MACRO_JSON, null)
+        val recordedMacro = RecordedMacro.fromJson(macroJson)
+        val macroRepeatCount = prefs.getInt(KEY_MACRO_REPEAT_COUNT, 1)
+        val macroIntervalSec = prefs.getInt(KEY_MACRO_INTERVAL_SEC, 0)
+        val neonBrightness = prefs.getInt(KEY_NEON_BRIGHTNESS, 85)
+        com.example.autoclicker.ui.theme.NeonTheme.brightness = neonBrightness / 100f
+
         return ClickerSettings(
             point1 = p1,
             point2 = p2,
             point3 = p3,
+            point4 = loadExtraPoint(4),
+            point5 = loadExtraPoint(5),
+            point6 = loadExtraPoint(6),
+            point7 = loadExtraPoint(7),
+            point8 = loadExtraPoint(8),
+            point9 = loadExtraPoint(9),
+            point10 = loadExtraPoint(10),
             cycleDelayMinutes = cycleDelayMinutes,
             overlayX = overlayX,
             overlayY = overlayY,
@@ -71,7 +113,13 @@ class SettingsRepository private constructor(val context: Context) {
             pointsScreenWidth = pointsScreenWidth,
             pointsScreenHeight = pointsScreenHeight,
             isSmartMode = isSmartMode,
-            isDebugScreenshots = isDebugScreenshots
+            isDebugScreenshots = isDebugScreenshots,
+            isSwipesEnabled = isSwipesEnabled,
+            swipes = swipes,
+            recordedMacro = recordedMacro,
+            macroRepeatCount = macroRepeatCount,
+            macroIntervalSec = macroIntervalSec,
+            neonBrightness = neonBrightness
         )
     }
 
@@ -84,19 +132,9 @@ class SettingsRepository private constructor(val context: Context) {
         screenHeight: Int = 0
     ) {
         val editor = prefs.edit()
-        when (pointId) {
-            1 -> {
-                editor.putFloat(KEY_P1_X, x)
-                editor.putFloat(KEY_P1_Y, y)
-            }
-            2 -> {
-                editor.putFloat(KEY_P2_X, x)
-                editor.putFloat(KEY_P2_Y, y)
-            }
-            3 -> {
-                editor.putFloat(KEY_P3_X, x)
-                editor.putFloat(KEY_P3_Y, y)
-            }
+        if (pointId in 1..10) {
+            editor.putFloat("point${pointId}_x", x)
+            editor.putFloat("point${pointId}_y", y)
         }
         if (orientation > 0) {
             editor.putInt(KEY_POINTS_ORIENTATION, orientation)
@@ -115,22 +153,10 @@ class SettingsRepository private constructor(val context: Context) {
         val editor = prefs.edit()
         val safeCount = count.coerceIn(1, 10)
         val safeInterval = interval.coerceIn(1, 30)
-        when (pointId) {
-            1 -> {
-                editor.putBoolean(KEY_P1_ENABLED, enabled)
-                editor.putInt(KEY_P1_COUNT, safeCount)
-                editor.putInt(KEY_P1_INTERVAL, safeInterval)
-            }
-            2 -> {
-                editor.putBoolean(KEY_P2_ENABLED, enabled)
-                editor.putInt(KEY_P2_COUNT, safeCount)
-                editor.putInt(KEY_P2_INTERVAL, safeInterval)
-            }
-            3 -> {
-                editor.putBoolean(KEY_P3_ENABLED, enabled)
-                editor.putInt(KEY_P3_COUNT, safeCount)
-                editor.putInt(KEY_P3_INTERVAL, safeInterval)
-            }
+        if (pointId in 1..10) {
+            editor.putBoolean("point${pointId}_enabled", enabled)
+            editor.putInt("point${pointId}_count", safeCount)
+            editor.putInt("point${pointId}_interval", safeInterval)
         }
         editor.apply()
         _settings.value = loadSettings()
@@ -164,10 +190,83 @@ class SettingsRepository private constructor(val context: Context) {
         _settings.value = loadSettings()
     }
 
+    fun updateSwipesMasterEnabled(enabled: Boolean) {
+        prefs.edit()
+            .putBoolean(KEY_SWIPES_ENABLED, enabled)
+            .apply()
+        _settings.value = loadSettings()
+    }
+
+    fun updateSwipeCoordinates(
+        swipeId: Int,
+        startX: Float,
+        startY: Float,
+        endX: Float,
+        endY: Float
+    ) {
+        if (swipeId in 1..3) {
+            prefs.edit()
+                .putFloat("swipe${swipeId}_start_x", startX)
+                .putFloat("swipe${swipeId}_start_y", startY)
+                .putFloat("swipe${swipeId}_end_x", endX)
+                .putFloat("swipe${swipeId}_end_y", endY)
+                .apply()
+            _settings.value = loadSettings()
+        }
+    }
+
+    fun updateSwipeConfig(
+        swipeId: Int,
+        enabled: Boolean,
+        durationMs: Long,
+        intervalSec: Int
+    ) {
+        if (swipeId in 1..3) {
+            val safeDuration = durationMs.coerceIn(100L, 1500L)
+            val safeInterval = intervalSec.coerceIn(1, 600)
+            prefs.edit()
+                .putBoolean("swipe${swipeId}_enabled", enabled)
+                .putLong("swipe${swipeId}_duration_ms", safeDuration)
+                .putInt("swipe${swipeId}_interval_sec", safeInterval)
+                .apply()
+            _settings.value = loadSettings()
+        }
+    }
+
+    fun saveMacro(macro: RecordedMacro) {
+        prefs.edit()
+            .putString(KEY_MACRO_JSON, macro.toJson())
+            .apply()
+        _settings.value = loadSettings()
+    }
+
+    fun clearMacro() {
+        prefs.edit()
+            .remove(KEY_MACRO_JSON)
+            .apply()
+        _settings.value = loadSettings()
+    }
+
+    fun updateMacroConfig(repeatCount: Int, intervalSec: Int) {
+        prefs.edit()
+            .putInt(KEY_MACRO_REPEAT_COUNT, repeatCount.coerceIn(1, 100))
+            .putInt(KEY_MACRO_INTERVAL_SEC, intervalSec.coerceIn(0, 60))
+            .apply()
+        _settings.value = loadSettings()
+    }
+
+    fun updateNeonBrightness(brightness: Int) {
+        val b = brightness.coerceIn(0, 100)
+        prefs.edit().putInt(KEY_NEON_BRIGHTNESS, b).apply()
+        com.example.autoclicker.ui.theme.NeonTheme.brightness = b / 100f
+        _settings.value = loadSettings()
+    }
+
     fun getLatestSettings(): ClickerSettings = _settings.value
 
     companion object {
         private const val PREFS_NAME = "auto_clicker_prefs"
+        private const val KEY_NEON_BRIGHTNESS = "neon_brightness"
 
         private const val KEY_P1_X = "point1_x"
         private const val KEY_P1_Y = "point1_y"
@@ -198,6 +297,11 @@ class SettingsRepository private constructor(val context: Context) {
 
         private const val KEY_SMART_MODE = "is_smart_mode"
         private const val KEY_DEBUG_SCREENSHOTS = "is_debug_screenshots"
+        private const val KEY_SWIPES_ENABLED = "is_swipes_enabled"
+
+        private const val KEY_MACRO_JSON = "macro_json"
+        private const val KEY_MACRO_REPEAT_COUNT = "macro_repeat_count"
+        private const val KEY_MACRO_INTERVAL_SEC = "macro_interval_sec"
 
         @Volatile
         private var INSTANCE: SettingsRepository? = null

@@ -1,10 +1,8 @@
 package com.example.autoclicker.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -12,7 +10,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -22,7 +19,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.autoclicker.data.ClickPoint
+import com.example.autoclicker.data.SwipeAction
 import com.example.autoclicker.ui.theme.AccentRed
 import com.example.autoclicker.ui.theme.GlassButton
 import com.example.autoclicker.ui.theme.GlassPanel
@@ -32,26 +29,25 @@ import com.example.autoclicker.ui.theme.TextMuted
 import com.example.autoclicker.ui.theme.TextSecondary
 
 @Composable
-fun PointConfigContent(
-    point: ClickPoint,
-    onTestClick: () -> Unit,
+fun SingleSwipeContent(
+    swipe: SwipeAction,
     onToggleEnabled: (Boolean) -> Unit,
-    onCountChange: (Int) -> Unit,
+    onDurationChange: (Long) -> Unit,
     onIntervalChange: (Int) -> Unit,
+    onTestSwipe: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
-        // Тумблер включения точки
         GlassSwitch(
-            text = "Поинт ${point.id} включён",
-            checked = point.enabled,
+            text = "Свайп ${swipe.id} включён",
+            checked = swipe.enabled,
             onCheckedChange = onToggleEnabled,
-            modifier = Modifier.testTag("point_${point.id}_switch")
+            modifier = Modifier.testTag("swipe_${swipe.id}_switch")
         )
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Отображение координат
+        // Координаты начала и конца
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -65,23 +61,23 @@ fun PointConfigContent(
         ) {
             Column {
                 Text(
-                    text = "КООРДИНАТЫ:",
+                    text = "ЛИНИЯ СВАЙПА:",
                     color = TextSecondary,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold
                 )
                 Spacer(modifier = Modifier.height(4.dp))
-                if (point.isConfigured) {
+                if (swipe.isConfigured) {
                     Text(
-                        text = "X = ${point.x.toInt()}    Y = ${point.y.toInt()}",
+                        text = "(${swipe.startX.toInt()}, ${swipe.startY.toInt()}) → (${swipe.endX.toInt()}, ${swipe.endY.toInt()})",
                         color = Color(0xFF8CFF00),
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 14.sp
+                        fontSize = 13.sp
                     )
                 } else {
                     Text(
-                        text = "Не заданы (используйте плавающее окно)",
+                        text = "Не задана (используйте плавающее окно)",
                         color = AccentRed,
                         fontSize = 12.sp
                     )
@@ -91,41 +87,41 @@ fun PointConfigContent(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Количество нажатий
+        // Длительность свайпа
         Text(
-            text = "КОЛИЧЕСТВО НАЖАТИЙ",
+            text = "ДЛИТЕЛЬНОСТЬ ЖЕСТА",
             color = TextSecondary,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
         )
         GlassSlider(
-            value = point.clickCount.toFloat(),
-            onValueChange = { onCountChange(it.toInt()) },
-            valueRange = 1f..10f,
-            steps = 8,
-            formattedValue = "${point.clickCount}×",
+            value = swipe.durationMs.toFloat(),
+            onValueChange = { onDurationChange(it.toLong()) },
+            valueRange = 100f..2000f,
+            steps = 18,
+            formattedValue = "${swipe.durationMs} мс",
             icon = {
-                Text("×", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text("⚡", color = Color.White, fontSize = 14.sp)
             }
         )
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Интервал между нажатиями
+        // Интервал между свайпами
         Text(
-            text = "ИНТЕРВАЛ МЕЖДУ НАЖАТИЯМИ",
+            text = "ИНТЕРВАЛ МЕЖДУ СВАЙПАМИ",
             color = TextSecondary,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
         )
         GlassSlider(
-            value = point.intervalSec.toFloat(),
+            value = swipe.intervalSec.toFloat(),
             onValueChange = { onIntervalChange(it.toInt()) },
             valueRange = 1f..30f,
             steps = 28,
-            formattedValue = "${point.intervalSec} с",
+            formattedValue = "${swipe.intervalSec} с",
             icon = {
                 Text("⏱", color = Color.White, fontSize = 14.sp)
             }
@@ -133,18 +129,18 @@ fun PointConfigContent(
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // Кнопка тестирования клика
+        // Кнопка тестирования свайпа
         GlassButton(
-            onClick = onTestClick,
+            onClick = onTestSwipe,
             modifier = Modifier
                 .fillMaxWidth()
-                .testTag("test_point_${point.id}_btn"),
+                .testTag("test_swipe_${swipe.id}_btn"),
             height = 46.dp,
-            isOn = point.isConfigured
+            isOn = swipe.isConfigured
         ) {
             Text(
-                text = if (point.isConfigured) "Тест клика (${point.x.toInt()}, ${point.y.toInt()})" else "Координаты не заданы",
-                color = if (point.isConfigured) Color.White else TextMuted,
+                text = if (swipe.isConfigured) "Тест свайпа #${swipe.id}" else "Линия свайпа не задана",
+                color = if (swipe.isConfigured) Color.White else TextMuted,
                 fontWeight = FontWeight.Bold,
                 fontSize = 13.sp
             )
@@ -153,26 +149,43 @@ fun PointConfigContent(
 }
 
 @Composable
-fun PointConfigCard(
-    point: ClickPoint,
-    onTestClick: () -> Unit,
-    onToggleEnabled: (Boolean) -> Unit,
-    onCountChange: (Int) -> Unit,
-    onIntervalChange: (Int) -> Unit,
+fun SwipesConfigCard(
+    isSwipesEnabled: Boolean,
+    swipes: List<SwipeAction>,
+    onToggleMaster: (Boolean) -> Unit,
+    onUpdateSwipeConfig: (Int, Boolean, Long, Int) -> Unit,
+    onTestSwipe: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     GlassPanel(
         modifier = modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp)
-            .testTag("point_${point.id}_card")
+            .testTag("swipes_master_card")
     ) {
-        PointConfigContent(
-            point = point,
-            onTestClick = onTestClick,
-            onToggleEnabled = onToggleEnabled,
-            onCountChange = onCountChange,
-            onIntervalChange = onIntervalChange
+        GlassSwitch(
+            text = "Свайпы включены",
+            checked = isSwipesEnabled,
+            onCheckedChange = onToggleMaster,
+            modifier = Modifier.testTag("swipes_master_switch")
         )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        swipes.forEach { swipe ->
+            SingleSwipeContent(
+                swipe = swipe,
+                onToggleEnabled = { enabled ->
+                    onUpdateSwipeConfig(swipe.id, enabled, swipe.durationMs, swipe.intervalSec)
+                },
+                onDurationChange = { dur ->
+                    onUpdateSwipeConfig(swipe.id, swipe.enabled, dur, swipe.intervalSec)
+                },
+                onIntervalChange = { intv ->
+                    onUpdateSwipeConfig(swipe.id, swipe.enabled, swipe.durationMs, intv)
+                },
+                onTestSwipe = { onTestSwipe(swipe.id) }
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
     }
 }

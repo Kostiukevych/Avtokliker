@@ -284,7 +284,7 @@ class CycleController private constructor(
                 val s1 = settingsRepository.getLatestSettings()
                 if (s1.point1.enabled) {
                     _status.value = CycleStatus.RUNNING
-                    _nextAction.value = if (s1.point2.enabled) "Point 2" else if (s1.point3.enabled) "Point 3" else "Ожидание"
+                    _nextAction.value = findNextEnabledPointLabel(s1, afterPointId = 1)
                     executePoint(s1.point1)
                     safeDelay(1000L, "Пауза 1с после Point 1")
                 }
@@ -294,7 +294,7 @@ class CycleController private constructor(
                 val s2 = settingsRepository.getLatestSettings()
                 if (s2.point2.enabled) {
                     _status.value = CycleStatus.RUNNING
-                    _nextAction.value = if (s2.point3.enabled) "Point 3" else "Ожидание"
+                    _nextAction.value = findNextEnabledPointLabel(s2, afterPointId = 2)
                     executePoint(s2.point2)
                     safeDelay(1000L, "Пауза 1с после Point 2")
                 }
@@ -304,13 +304,38 @@ class CycleController private constructor(
                 val s3 = settingsRepository.getLatestSettings()
                 if (s3.point3.enabled) {
                     _status.value = CycleStatus.RUNNING
-                    _nextAction.value = "Ожидание таймера"
+                    _nextAction.value = findNextEnabledPointLabel(s3, afterPointId = 3)
                     executePoint(s3.point3)
                     _lastAction.value = "Point 3 (Цикл #$currentCycle)"
                     EventLogManager.log(
                         EventLogManager.TAG_CYCLE,
                         "POINT 3 COMPLETED: Запуск матча выполнен (Цикл #$currentCycle)"
                     )
+                    val hasMore = (4..10).any { s3.getPointById(it).enabled }
+                    if (hasMore) {
+                        safeDelay(1000L, "Пауза 1с после Point 3")
+                    }
+                }
+
+                // 4..10. Точки 4..10
+                for (id in 4..10) {
+                    coroutineContext.ensureActive()
+                    val sExtra = settingsRepository.getLatestSettings()
+                    val pt = sExtra.getPointById(id)
+                    if (pt.enabled) {
+                        _status.value = CycleStatus.RUNNING
+                        _nextAction.value = findNextEnabledPointLabel(sExtra, afterPointId = id)
+                        executePoint(pt)
+                        _lastAction.value = "Point $id (Цикл #$currentCycle)"
+                        EventLogManager.log(
+                            EventLogManager.TAG_CYCLE,
+                            "POINT $id COMPLETED (Цикл #$currentCycle)"
+                        )
+                        val hasMore = ((id + 1)..10).any { sExtra.getPointById(it).enabled }
+                        if (hasMore) {
+                            safeDelay(1000L, "Пауза 1с после Point $id")
+                        }
+                    }
                 }
 
                 _cycleNumber.value = currentCycle + 1
@@ -413,6 +438,13 @@ class CycleController private constructor(
     private suspend fun safeDelay(ms: Long, actionDescription: String) {
         _currentAction.value = actionDescription
         delay(ms)
+    }
+
+    private fun findNextEnabledPointLabel(settings: com.example.autoclicker.data.ClickerSettings, afterPointId: Int): String {
+        for (id in (afterPointId + 1)..10) {
+            if (settings.getPointById(id).enabled) return "Point $id"
+        }
+        return "Ожидание таймера"
     }
 
     companion object {

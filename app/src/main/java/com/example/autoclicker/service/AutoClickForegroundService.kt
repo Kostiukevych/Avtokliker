@@ -35,6 +35,7 @@ class AutoClickForegroundService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var cycleController: CycleController
     private lateinit var smartEngine: SmartEngine
+    private lateinit var swipeController: com.example.autoclicker.engine.SwipeController
     private lateinit var settingsRepo: SettingsRepository
     private lateinit var notificationManager: NotificationManager
 
@@ -45,6 +46,7 @@ class AutoClickForegroundService : Service() {
         val gestureExecutor = GestureExecutor()
         cycleController = CycleController.getInstance(gestureExecutor, settingsRepo)
         smartEngine = SmartEngine.getInstance(applicationContext, gestureExecutor, settingsRepo)
+        swipeController = com.example.autoclicker.engine.SwipeController.getInstance(gestureExecutor, settingsRepo)
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         createNotificationChannel()
@@ -57,6 +59,9 @@ class AutoClickForegroundService : Service() {
         when (intent?.action) {
             ACTION_START -> {
                 val settings = settingsRepo.getLatestSettings()
+                if (settings.isSwipesEnabled) {
+                    swipeController.start()
+                }
                 if (settings.isSmartMode) {
                     smartEngine.start()
                 } else {
@@ -64,10 +69,12 @@ class AutoClickForegroundService : Service() {
                 }
             }
             ACTION_STOP -> {
+                swipeController.stop()
                 smartEngine.stop()
                 cycleController.stop()
             }
             ACTION_SHUTDOWN -> {
+                swipeController.stop()
                 smartEngine.stop()
                 cycleController.stop()
                 stopForeground(STOP_FOREGROUND_REMOVE)

@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PixelFormat
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -19,11 +20,11 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.example.autoclicker.data.EventLogManager
 import com.example.autoclicker.data.SettingsRepository
+import com.example.autoclicker.ui.theme.NeonTheme
 
 /**
- * Полноэкранный оверлей калибровки точки.
- * Тапни / перетащи по экрану, чтобы поставить прицел, затем нажми «Сохранить».
- * Координаты сохраняются в абсолютных пикселях экрана.
+ * Полноэкранный оверлей калибровки точки и жестов с неоновым прицелом (.aim-layer)
+ * и стеклянной плавающей панелью кнопок (.float-bar) в стиле liquid-glass-neon.
  */
 @SuppressLint("ClickableViewAccessibility")
 class CalibrationOverlayView(
@@ -62,55 +63,67 @@ class CalibrationOverlayView(
     }
 
     private fun buildViews() {
-        val point = settingsRepo.getLatestSettings().let {
-            when (currentPointId) {
-                1 -> it.point1
-                2 -> it.point2
-                else -> it.point3
-            }
+        val point = if (currentPointId in 1..10) {
+            settingsRepo.getLatestSettings().getPointById(currentPointId)
+        } else {
+            null
         }
         val (sw, sh) = screenSize()
 
-        val marker = MarkerView(ctx, currentPointId, density).apply {
-            markerX = if (point.isConfigured) point.x else sw / 2f
-            markerY = if (point.isConfigured) point.y else sh / 2f
+        val isBlue = currentPointId % 2 == 0 && currentPointId !in 1..10
+        val marker = MarkerView(ctx, currentPointId, density, isBlue).apply {
+            markerX = if (point?.isConfigured == true) point.x else sw / 2f
+            markerY = if (point?.isConfigured == true) point.y else sh / 2f
         }
         markerView = marker
 
         val hint = TextView(ctx).apply {
-            text = "Точка $currentPointId: коснись экрана или перетащи прицел"
+            text = if (currentPointId in 1..10) {
+                "Точка $currentPointId: коснись экрана или перетащи прицел"
+            } else if (currentPointId % 2 == 1) {
+                "Начало свайпа: коснись экрана или перетащи прицел"
+            } else {
+                "Конец свайпа: коснись экрана или перетащи прицел"
+            }
             setTextColor(Color.WHITE)
-            textSize = 13f
+            textSize = 12f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
         }
 
         val coords = TextView(ctx).apply {
-            setTextColor(Color.parseColor("#00E5FF"))
+            setTextColor(Color.parseColor("#8CFF00"))
             textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
+            setPadding(0, dp(2), 0, dp(4))
         }
         coordsText = coords
+
+        // Стеклянные кнопки в стиле .float-bar
+        val cancelBtn = Button(ctx).apply {
+            text = "Отмена"
+            textSize = 13f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+            background = roundBg(Color.parseColor("#44FF3333"), dp(12))
+            layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) }
+            setOnClickListener { dismiss() }
+        }
 
         val saveBtn = Button(ctx).apply {
             text = "Сохранить"
             textSize = 13f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
-            background = roundBg(Color.parseColor("#2E7D32"))
-            layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(8) }
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Color.parseColor("#6AD000"), Color.parseColor("#4A9A00"))
+            ).apply {
+                cornerRadius = dp(12).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f)
             setOnClickListener { save() }
-        }
-
-        val cancelBtn = Button(ctx).apply {
-            text = "Отмена"
-            textSize = 13f
-            setTextColor(Color.WHITE)
-            typeface = Typeface.DEFAULT_BOLD
-            background = roundBg(Color.parseColor("#C62828"))
-            layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
-            setOnClickListener { dismiss() }
         }
 
         val buttons = LinearLayout(ctx).apply {
@@ -118,18 +131,23 @@ class CalibrationOverlayView(
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(8) }
-            addView(saveBtn)
+            ).apply { topMargin = dp(6) }
             addView(cancelBtn)
+            addView(saveBtn)
         }
 
+        // Плавающая стеклянная панель .float-bar
         val panelLayout = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(12), dp(16), dp(12))
+            setPadding(dp(16), dp(10), dp(16), dp(12))
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#F0141E2B"))
-                cornerRadius = dp(12).toFloat()
-                setStroke(dp(1), Color.parseColor("#4D90CAF9"))
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(18).toFloat()
+                colors = intArrayOf(
+                    Color.parseColor("#E6181B28"),
+                    Color.parseColor("#FA0B0D18")
+                )
+                setStroke(dp(2), NeonTheme.getBorderColorInt())
             }
             isClickable = true
             addView(hint)
@@ -139,7 +157,7 @@ class CalibrationOverlayView(
         panel = panelLayout
 
         val container = FrameLayout(ctx).apply {
-            setBackgroundColor(Color.parseColor("#66000000"))
+            setBackgroundColor(Color.parseColor("#8005050A")) // Полупрозрачное затемнение
             addView(
                 marker,
                 FrameLayout.LayoutParams(
@@ -150,7 +168,7 @@ class CalibrationOverlayView(
             addView(
                 panelLayout,
                 FrameLayout.LayoutParams(
-                    (minOf(sw, sh) * 0.85f).toInt(),
+                    (minOf(sw, sh) * 0.85f).toInt().coerceAtMost(dp(360)),
                     FrameLayout.LayoutParams.WRAP_CONTENT,
                     Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
                 ).apply {
@@ -179,7 +197,7 @@ class CalibrationOverlayView(
 
     private fun updateUi() {
         val m = markerView ?: return
-        coordsText?.text = "X=${m.markerX.toInt()}  Y=${m.markerY.toInt()}"
+        coordsText?.text = "X=${m.markerX.toInt()}   Y=${m.markerY.toInt()}"
 
         // Панель уходит в противоположную от прицела половину экрана
         val (_, sh) = screenSize()
@@ -197,18 +215,20 @@ class CalibrationOverlayView(
         val m = markerView ?: return
         val (sw, sh) = screenSize()
         val orientation = if (sw > sh) 2 else 1 // 1 = Portrait, 2 = Landscape
-        settingsRepo.updatePointCoordinates(
-            pointId = currentPointId,
-            x = m.markerX,
-            y = m.markerY,
-            orientation = orientation,
-            screenWidth = sw,
-            screenHeight = sh
-        )
-        EventLogManager.log(
-            EventLogManager.TAG_OVERLAY,
-            "SET POINT $currentPointId: (${m.markerX.toInt()}, ${m.markerY.toInt()})"
-        )
+        if (currentPointId in 1..10) {
+            settingsRepo.updatePointCoordinates(
+                pointId = currentPointId,
+                x = m.markerX,
+                y = m.markerY,
+                orientation = orientation,
+                screenWidth = sw,
+                screenHeight = sh
+            )
+            EventLogManager.log(
+                EventLogManager.TAG_OVERLAY,
+                "SET POINT $currentPointId: (${m.markerX.toInt()}, ${m.markerY.toInt()})"
+            )
+        }
         onCoordinateCaptured?.invoke(currentPointId, m.markerX, m.markerY)
         dismiss()
     }
@@ -266,54 +286,101 @@ class CalibrationOverlayView(
         onDismissed?.invoke()
     }
 
-    private fun roundBg(color: Int): GradientDrawable = GradientDrawable().apply {
+    private fun roundBg(color: Int, radiusDp: Int): GradientDrawable = GradientDrawable().apply {
         setColor(color)
-        cornerRadius = dp(8).toFloat()
+        cornerRadius = dp(radiusDp).toFloat()
     }
 
-    /** Прицел: круг + перекрестие на всю ширину/высоту экрана. */
+    /** Прицел .aim-cross: перекрестие с неоновым свечением, кольцо и центральная точка. */
     private class MarkerView(
         context: Context,
         private val pointId: Int,
-        private val density: Float
+        private val density: Float,
+        private val isBlue: Boolean
     ) : View(context) {
 
         var markerX: Float = 0f
         var markerY: Float = 0f
 
+        private val mainColor = if (isBlue) Color.parseColor("#40B0FF") else Color.parseColor("#8CFF00")
+        private val glowColor = if (isBlue) Color.parseColor("#6640B0FF") else Color.parseColor("#668CFF00")
+
+        private val lineGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = glowColor
+            strokeWidth = 6f * density
+        }
         private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#9900E5FF")
-            strokeWidth = 1.5f * density
+            color = mainColor
+            strokeWidth = 2f * density
+        }
+        private val ringGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = glowColor
+            style = Paint.Style.STROKE
+            strokeWidth = 8f * density
         }
         private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#FF00E5FF")
+            color = mainColor
             style = Paint.Style.STROKE
-            strokeWidth = 3f * density
+            strokeWidth = 2.5f * density
         }
-        private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#FFFF1744")
+        private val dotGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = glowColor
             style = Paint.Style.FILL
         }
+        private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = mainColor
+            style = Paint.Style.FILL
+        }
+        private val badgeBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#D9080A14")
+            style = Paint.Style.FILL
+        }
+        private val badgeBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = mainColor
+            style = Paint.Style.STROKE
+            strokeWidth = 1.5f * density
+        }
         private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            textSize = 14f * density
+            color = mainColor
+            textSize = 12f * density
             typeface = Typeface.DEFAULT_BOLD
             textAlign = Paint.Align.CENTER
         }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            // markerX/Y — экранные координаты; переводим в координаты этого view
             val loc = IntArray(2)
             getLocationOnScreen(loc)
             val cx = markerX - loc[0]
             val cy = markerY - loc[1]
 
+            // 1. Линии перекрестия со свечением
+            canvas.drawLine(0f, cy, width.toFloat(), cy, lineGlowPaint)
+            canvas.drawLine(cx, 0f, cx, height.toFloat(), lineGlowPaint)
             canvas.drawLine(0f, cy, width.toFloat(), cy, linePaint)
             canvas.drawLine(cx, 0f, cx, height.toFloat(), linePaint)
-            canvas.drawCircle(cx, cy, 24f * density, ringPaint)
-            canvas.drawCircle(cx, cy, 4f * density, dotPaint)
-            canvas.drawText("P$pointId", cx, cy - 32f * density, textPaint)
+
+            // 2. Кольцо прицела
+            val ringRadius = 24f * density
+            canvas.drawCircle(cx, cy, ringRadius, ringGlowPaint)
+            canvas.drawCircle(cx, cy, ringRadius, ringPaint)
+
+            // 3. Центральная точка
+            canvas.drawCircle(cx, cy, 6f * density, dotGlowPaint)
+            canvas.drawCircle(cx, cy, 3.5f * density, dotPaint)
+
+            // 4. Бейдж с номером / названием
+            val label = if (pointId in 1..10) "ТОЧКА $pointId" else if (pointId % 2 == 1) "НАЧАЛО" else "КОНЕЦ"
+            val textWidth = textPaint.measureText(label)
+            val badgeW = textWidth + 16f * density
+            val badgeH = 22f * density
+            val badgeX = cx - badgeW / 2f
+            val badgeY = cy - ringRadius - badgeH - 6f * density
+
+            val badgeRect = RectF(badgeX, badgeY, badgeX + badgeW, badgeY + badgeH)
+            canvas.drawRoundRect(badgeRect, 8f * density, 8f * density, badgeBgPaint)
+            canvas.drawRoundRect(badgeRect, 8f * density, 8f * density, badgeBorderPaint)
+            canvas.drawText(label, cx, badgeY + badgeH - 6f * density, textPaint)
         }
     }
 }

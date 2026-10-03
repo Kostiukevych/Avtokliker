@@ -56,6 +56,7 @@ class MainActivity : ComponentActivity() {
                 val cycleNumber by viewModel.cycleNumber.collectAsState()
                 val isAccessibilityConnected by viewModel.isAccessibilityConnected.collectAsState()
                 val isOverlayGranted by viewModel.isOverlayPermissionGranted.collectAsState()
+                val isMacroRunning by viewModel.isMacroRunning.collectAsState()
 
                 MainScreen(
                     settings = settings,
@@ -86,6 +87,23 @@ class MainActivity : ComponentActivity() {
                     },
                     onUpdateDebugScreenshots = { enabled ->
                         viewModel.updateDebugScreenshots(enabled)
+                    },
+                    onUpdateSwipesMasterEnabled = { enabled ->
+                        viewModel.updateSwipesMasterEnabled(enabled)
+                    },
+                    onUpdateSwipeConfig = { id, enabled, duration, interval ->
+                        viewModel.updateSwipeConfig(id, enabled, duration, interval)
+                    },
+                    onTestSwipe = { id ->
+                        viewModel.testSwipe(id)
+                    },
+                    isMacroRunning = isMacroRunning,
+                    onStartMacro = { viewModel.startMacro() },
+                    onStopMacro = { viewModel.stopMacro() },
+                    onStartMacroRecording = { launchMacroRecording() },
+                    onClearMacro = { viewModel.clearMacro() },
+                    onUpdateMacroConfig = { repeatCount, intervalSec ->
+                        viewModel.updateMacroConfig(repeatCount, intervalSec)
                     },
                     onClearLogs = { viewModel.clearLogs() }
                 )
@@ -167,5 +185,18 @@ class MainActivity : ComponentActivity() {
                 isError = true
             )
         }
+    }
+
+    private fun launchMacroRecording() {
+        if (!Settings.canDrawOverlays(this)) {
+            openOverlaySettings()
+            return
+        }
+        val overlay = com.example.autoclicker.service.MacroRecordingOverlayView(
+            context = this,
+            onMacroRecorded = {},
+            onDismissed = {}
+        )
+        overlay.show()
     }
 }

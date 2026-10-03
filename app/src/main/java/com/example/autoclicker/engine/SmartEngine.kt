@@ -55,6 +55,17 @@ class SmartEngine private constructor(
 
     var tapHooks: TapHooks? = null
 
+    init {
+        com.example.autoclicker.data.SmartConfigManager.getInstance(context).onConfigChangedListener = {
+            if (isRunning) {
+                coroutineScope.launch {
+                    stopInternal("смена настроек конфига")
+                    start()
+                }
+            }
+        }
+    }
+
     private val _status = MutableStateFlow(CycleStatus.STOPPED)
     val status: StateFlow<CycleStatus> = _status.asStateFlow()
 
@@ -119,8 +130,20 @@ class SmartEngine private constructor(
         val clickX: Float,
         val clickY: Float,
         val score: Float,
-        val isContinue: Boolean
+        val isContinue: Boolean,
+        val afterDelayMs: Long = 3000L,
+        val rule: com.example.autoclicker.data.SmartRule? = null
     )
+
+    data class RuleTemplate(
+        val rule: com.example.autoclicker.data.SmartRule,
+        val rawBitmap: Bitmap,
+        val variants: List<TemplateVariant>
+    )
+
+    private val croppedBitmapsCache = mutableMapOf<String, Bitmap>()
+    private var cachedRuleTemplates: List<RuleTemplate>? = null
+    private var cachedRulesHash: Int = 0
 
     data class CandidateScanResult(
         val bestStart: FoundMatch?,
@@ -175,10 +198,17 @@ class SmartEngine private constructor(
                 _countdownText.value = ""
                 _remainingSeconds.value = 0
 
+                val configManager = com.example.autoclicker.data.SmartConfigManager.getInstance(context)
+                val effectiveConfig = configManager.buildEffectiveRules()
+
                 val (realW, realH) = getRealScreenSize()
                 EventLogManager.log(
                     EventLogManager.TAG_AUTO_CLICKER,
                     "SMART: Умный режим запущен. Разрешение экрана: ${realW}x${realH}"
+                )
+                EventLogManager.log(
+                    EventLogManager.TAG_AUTO_CLICKER,
+                    "SMART: режим ${effectiveConfig.mode.name}, правил ${effectiveConfig.rules.size} (встроенных ${effectiveConfig.builtinCount}, своих ${effectiveConfig.customCount})"
                 )
                 EventLogManager.log(
                     EventLogManager.TAG_AUTO_CLICKER,
@@ -188,7 +218,7 @@ class SmartEngine private constructor(
                 val newJob = launch {
                     val currentJob = coroutineContext[Job]
                     try {
-                        runLoop()
+                        runLoop(effectiveConfig)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (t: Throwable) {
@@ -220,18 +250,22 @@ class SmartEngine private constructor(
         return true
     }
 
+    suspend fun stopInternal(reason: String = "кнопка Стоп") {
+        val jobToCancel: Job?
+        engineMutex.withLock {
+            jobToCancel = engineJob
+            engineJob = null
+            resetState()
+            clearScreensDir()
+            _lastAction.value = "STOP"
+            EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "SMART: остановка, причина: $reason")
+        }
+        jobToCancel?.cancelAndJoin()
+    }
+
     fun stop(reason: String = "кнопка Стоп") {
         coroutineScope.launch {
-            val jobToCancel: Job?
-            engineMutex.withLock {
-                jobToCancel = engineJob
-                engineJob = null
-                resetState()
-                clearScreensDir()
-                _lastAction.value = "STOP"
-                EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "SMART: остановка, причина: $reason")
-            }
-            jobToCancel?.cancelAndJoin()
+            stopInternal(reason)
         }
     }
 
@@ -262,15 +296,16 @@ class SmartEngine private constructor(
         return Pair(dm.widthPixels, dm.heightPixels)
     }
 
-    private suspend fun runLoop() {
-        ensureTemplatesLoaded()
+    private suspend fun runLoop(effectiveConfig: com.example.autoclicker.data.EffectiveConfig) {
+        val (realW, realH) = getRealScreenSize()
+        val ruleTemplates = ensureRuleTemplates(effectiveConfig.rules, realW, realH)
 
-        var smartState = SmartState.LOBBY_SEARCH_START
         var lastMatchTime = System.currentTimeMillis()
-        val timeout5Min = 5 * 60 * 1000L
-        var unmatchedPassCount = 0
+        val idleTimeoutMs = effectiveConfig.idleTimeoutMin * 60 * 1000L
         var consecutiveErrors = 0
         var lastLoggedSize = ""
+
+        val hasBuiltin = effectiveConfig.rules.any { it.builtin }
 
         while (true) {
             try {
@@ -292,170 +327,119 @@ class SmartEngine private constructor(
                     return
                 }
 
-                _currentAction.value = when (smartState) {
-                    SmartState.LOBBY_SEARCH_START -> "Лобби: поиск «НАЧАТЬ»..."
-                    SmartState.WAITING_MATCH_START -> "Матч загружается..."
-                    SmartState.IN_MATCH_SEARCH_CONTINUE -> "В матче: ожидание окончания..."
-                    SmartState.POST_MATCH_TAP_CONTINUE -> "После матча: поиск «ПРОДОЛЖИТЬ»..."
-                }
+                _currentAction.value = "Поиск правил (${effectiveConfig.rules.size} шт.)..."
 
                 val screenshot = service.takeScreenshotBitmap()
                 if (screenshot != null && !screenshot.isRecycled) {
                     try {
-                        val (realW, realH) = getRealScreenSize()
                         val sizeStr = "${screenshot.width}x${screenshot.height}"
                         if (sizeStr != lastLoggedSize) {
                             lastLoggedSize = sizeStr
                             EventLogManager.log(
                                 EventLogManager.TAG_AUTO_CLICKER,
-                                "SMART: снимок ${sizeStr} (экран ${realW}x${realH}), состояние: $smartState"
+                                "SMART: снимок ${sizeStr} (экран ${realW}x${realH})"
                             )
                         }
 
-                        // Сохранение отладочных снимков при включенном режиме
                         val settings = settingsRepository.getLatestSettings()
                         if (settings.isDebugScreenshots) {
                             saveDebugScreenshot(screenshot)
                         }
 
-                        // Поиск кандидатов на экране (цветовая сегментация + шаблоны)
-                        val scanResult = scanAllCandidates(screenshot)
+                        // Поиск кандидатов в порядке приоритета
+                        var match: FoundMatch? = null
 
-                        when (smartState) {
-                            SmartState.LOBBY_SEARCH_START -> {
-                                val match = scanResult.bestStart ?: scanResult.bestContinue
-                                if (match != null) {
-                                    unmatchedPassCount = 0
-                                    lastMatchTime = System.currentTimeMillis()
+                        // Если есть встроенное правило "start", проверяем желтую кнопку лобби
+                        if (hasBuiltin && effectiveConfig.rules.any { it.builtin && it.id == "start" }) {
+                            val yellowStart = detectYellowButton(screenshot, 0.0f, 0.42f, 0.65f, 1.0f, "start_yellow", false)
+                            if (yellowStart != null && yellowStart.score >= 0.78f) {
+                                match = yellowStart
+                            }
+                        }
 
-                                    val scaleX = if (screenshot.width > 0) realW.toFloat() / screenshot.width else 1f
-                                    val scaleY = if (screenshot.height > 0) realH.toFloat() / screenshot.height else 1f
-                                    val finalX = match.clickX * scaleX
-                                    val finalY = match.clickY * scaleY
-
-                                    val btnLabel = if (match.isContinue) "ПРОДОЛЖИТЬ" else "НАЧАТЬ"
-                                    EventLogManager.log(
-                                        EventLogManager.TAG_AUTO_CLICKER,
-                                        "SMART: Кандидаты: ${scanResult.debugSummary}"
-                                    )
-                                    EventLogManager.log(
-                                        EventLogManager.TAG_AUTO_CLICKER,
-                                        "SMART: Выбрана кнопка «$btnLabel» (${match.name}, score ${(match.score * 100).toInt()}%), клик в (${finalX.toInt()}, ${finalY.toInt()})"
-                                    )
-
-                                    _currentAction.value = "Нажатие «$btnLabel»..."
-                                    _lastAction.value = "$btnLabel (${finalX.toInt()}, ${finalY.toInt()})"
-
-                                    val tapOk = performTapWithHooks(finalX, finalY)
-                                    EventLogManager.log(
-                                        EventLogManager.TAG_AUTO_CLICKER,
-                                        "SMART: результат dispatchGesture -> ${if (tapOk) "completed (нажатие прошло)" else "cancelled (жест отклонен)"}"
-                                    )
-
-                                    if (!match.isContinue) {
-                                        // Нажата кнопка «НАЧАТЬ» — защита от повторного нажатия и ожидание начала катки
-                                        smartState = SmartState.WAITING_MATCH_START
-                                        _currentAction.value = "«НАЧАТЬ» нажата. Ожидание катки..."
-                                        _nextAction.value = "Пауза 10с"
-
-                                        for (sec in 10 downTo 1) {
-                                            coroutineContext.ensureActive()
-                                            _remainingSeconds.value = sec
-                                            _countdownText.value = "${sec}с"
-                                            delay(1000L)
-                                        }
-                                        _remainingSeconds.value = 0
-                                        _countdownText.value = ""
-
-                                        smartState = SmartState.IN_MATCH_SEARCH_CONTINUE
-                                        lastMatchTime = System.currentTimeMillis()
-                                        EventLogManager.log(
-                                            EventLogManager.TAG_AUTO_CLICKER,
-                                            "SMART: Катка запущена, ожидание экрана окончания матча..."
-                                        )
-                                    } else {
-                                        // Если в лобби была кнопка «ПРОДОЛЖИТЬ», нажимаем и ждем
-                                        delay(2500L)
-                                    }
-                                } else {
-                                    unmatchedPassCount++
-                                    if (unmatchedPassCount % 3 == 0) {
-                                        EventLogManager.log(
-                                            EventLogManager.TAG_AUTO_CLICKER,
-                                            "SMART: кандидаты не найдены: ${scanResult.debugSummary}"
-                                        )
-                                    }
-
-                                    // Проверка таймаута 5 минут без совпадений в лобби
-                                    val elapsed = System.currentTimeMillis() - lastMatchTime
-                                    if (elapsed >= timeout5Min) {
-                                        EventLogManager.log(
-                                            EventLogManager.TAG_AUTO_CLICKER,
-                                            "SMART: экран не распознан",
-                                            isError = true
-                                        )
-                                        EventLogManager.log(
-                                            EventLogManager.TAG_AUTO_CLICKER,
-                                            "SMART: остановка, причина: 5 минут без совпадений"
-                                        )
-                                        showUnrecognizedScreenNotification()
-                                        resetState()
-                                        clearScreensDir()
-                                        return
-                                    }
-
-                                    _nextAction.value = "Повтор через 2с"
-                                    delay(2000L)
+                        // Проверяем шаблоны по правилам
+                        if (match == null) {
+                            for (rt in ruleTemplates) {
+                                val found = findMatchInScreenshot(screenshot, rt)
+                                if (found != null) {
+                                    match = found
+                                    break
                                 }
                             }
+                        }
 
-                            SmartState.WAITING_MATCH_START -> {
-                                delay(2000L)
-                            }
-
-                            SmartState.IN_MATCH_SEARCH_CONTINUE, SmartState.POST_MATCH_TAP_CONTINUE -> {
-                                // Во время матча время не ограничивается 5 минутами (катка длится 15-30 минут)
-                                lastMatchTime = System.currentTimeMillis()
-
-                                val matchContinue = scanResult.bestContinue
-                                val matchStart = scanResult.bestStart
-
-                                if (matchContinue != null) {
-                                    val scaleX = if (screenshot.width > 0) realW.toFloat() / screenshot.width else 1f
-                                    val scaleY = if (screenshot.height > 0) realH.toFloat() / screenshot.height else 1f
-                                    val finalX = matchContinue.clickX * scaleX
-                                    val finalY = matchContinue.clickY * scaleY
-
-                                    EventLogManager.log(
-                                        EventLogManager.TAG_AUTO_CLICKER,
-                                        "SMART: Найдена кнопка «ПРОДОЛЖИТЬ» (${matchContinue.name}, score ${(matchContinue.score * 100).toInt()}%), клик в (${finalX.toInt()}, ${finalY.toInt()})"
-                                    )
-
-                                    _currentAction.value = "Нажатие «ПРОДОЛЖИТЬ»..."
-                                    _lastAction.value = "ПРОДОЛЖИТЬ (${finalX.toInt()}, ${finalY.toInt()})"
-
-                                    val tapOk = performTapWithHooks(finalX, finalY)
-                                    EventLogManager.log(
-                                        EventLogManager.TAG_AUTO_CLICKER,
-                                        "SMART: результат dispatchGesture -> ${if (tapOk) "completed" else "cancelled"}"
-                                    )
-
-                                    smartState = SmartState.POST_MATCH_TAP_CONTINUE
-                                    _nextAction.value = "Пауза 3с"
-                                    delay(3000L)
-                                } else if (smartState == SmartState.POST_MATCH_TAP_CONTINUE && matchStart != null) {
-                                    // Кнопка продолжить исчезла, и появилась кнопка «НАЧАТЬ» — мы снова в лобби!
-                                    EventLogManager.log(
-                                        EventLogManager.TAG_AUTO_CLICKER,
-                                        "SMART: Обнаружено возвращение в лобби!"
-                                    )
-                                    smartState = SmartState.LOBBY_SEARCH_START
-                                    delay(1500L)
-                                } else {
-                                    _nextAction.value = "Ожидание окончания матча (2.5с)"
-                                    delay(2500L)
+                        // Если есть встроенные правила "continue", проверяем цвета
+                        if (match == null && hasBuiltin && effectiveConfig.rules.any { it.builtin && it.id.startsWith("continue") }) {
+                            val blueContinue = detectBlueButton(screenshot, 0.50f, 1.0f, 0.65f, 1.0f, "continue_blue_color", true)
+                            if (blueContinue != null && blueContinue.score >= 0.78f) {
+                                match = blueContinue
+                            } else {
+                                val yellowContinue = detectYellowButton(screenshot, 0.50f, 1.0f, 0.65f, 1.0f, "continue_yellow_color", true)
+                                if (yellowContinue != null && yellowContinue.score >= 0.78f) {
+                                    match = yellowContinue
                                 }
                             }
+                        }
+
+                        if (match != null) {
+                            lastMatchTime = System.currentTimeMillis()
+
+                            val scaleX = if (screenshot.width > 0) realW.toFloat() / screenshot.width else 1f
+                            val scaleY = if (screenshot.height > 0) realH.toFloat() / screenshot.height else 1f
+                            val finalX = match.clickX * scaleX
+                            val finalY = match.clickY * scaleY
+
+                            EventLogManager.log(
+                                EventLogManager.TAG_AUTO_CLICKER,
+                                "SMART: Выбрано правило «${match.name}» (score ${(match.score * 100).toInt()}%), клик в (${finalX.toInt()}, ${finalY.toInt()})"
+                            )
+
+                            _currentAction.value = "Нажатие «${match.name}»..."
+                            _lastAction.value = "${match.name} (${finalX.toInt()}, ${finalY.toInt()})"
+
+                            val tapOk = performTapWithHooks(finalX, finalY)
+                            EventLogManager.log(
+                                EventLogManager.TAG_AUTO_CLICKER,
+                                "SMART: результат dispatchGesture -> ${if (tapOk) "completed (нажатие прошло)" else "cancelled (жест отклонен)"}"
+                            )
+
+                            val delayMs = match.afterDelayMs
+                            if (delayMs > 0) {
+                                val totalSec = (delayMs / 1000).toInt()
+                                if (totalSec > 1) {
+                                    for (sec in totalSec downTo 1) {
+                                        coroutineContext.ensureActive()
+                                        _remainingSeconds.value = sec
+                                        _countdownText.value = "${sec}с"
+                                        delay(1000L)
+                                    }
+                                    _remainingSeconds.value = 0
+                                    _countdownText.value = ""
+                                } else {
+                                    delay(delayMs)
+                                }
+                            }
+                        } else {
+                            val elapsed = System.currentTimeMillis() - lastMatchTime
+                            if (elapsed >= idleTimeoutMs) {
+                                EventLogManager.log(
+                                    EventLogManager.TAG_AUTO_CLICKER,
+                                    "SMART: экран не распознан",
+                                    isError = true
+                                )
+                                EventLogManager.log(
+                                    EventLogManager.TAG_AUTO_CLICKER,
+                                    "SMART: остановка, причина: ${effectiveConfig.idleTimeoutMin} минут без совпадений"
+                                )
+                                showUnrecognizedScreenNotification()
+                                resetState()
+                                clearScreensDir()
+                                return
+                            }
+
+                            val nextSec = (effectiveConfig.scanIntervalMs / 1000).coerceAtLeast(1)
+                            _nextAction.value = "Повтор через ${nextSec}с"
+                            delay(effectiveConfig.scanIntervalMs)
                         }
                     } finally {
                         if (!screenshot.isRecycled) {
@@ -464,8 +448,9 @@ class SmartEngine private constructor(
                     }
                 } else {
                     _currentAction.value = "Умный режим: ожидание снимка..."
-                    _nextAction.value = "Повтор через 2с"
-                    delay(2000L)
+                    val nextSec = (effectiveConfig.scanIntervalMs / 1000).coerceAtLeast(1)
+                    _nextAction.value = "Повтор через ${nextSec}с"
+                    delay(effectiveConfig.scanIntervalMs)
                 }
 
                 consecutiveErrors = 0
@@ -503,9 +488,207 @@ class SmartEngine private constructor(
                     return
                 }
 
-                delay(2000L)
+                delay(effectiveConfig.scanIntervalMs)
             }
         }
+    }
+
+    private fun ensureRuleTemplates(
+        effectiveRules: List<com.example.autoclicker.data.SmartRule>,
+        screenWidth: Int,
+        screenHeight: Int
+    ): List<RuleTemplate> {
+        val rulesHash = effectiveRules.hashCode()
+        if (cachedRuleTemplates != null &&
+            cachedRulesHash == rulesHash &&
+            cachedScreenWidth == screenWidth &&
+            cachedScreenHeight == screenHeight &&
+            cachedRuleTemplates!!.all { !it.rawBitmap.isRecycled }
+        ) {
+            return cachedRuleTemplates!!
+        }
+
+        val result = mutableListOf<RuleTemplate>()
+        val H = minOf(screenWidth, screenHeight).toFloat()
+        val scaleMultipliers = floatArrayOf(0.93f, 1.0f, 1.07f)
+
+        for (rule in effectiveRules) {
+            val bmp = loadRuleBitmap(rule) ?: continue
+            val baseScale = H / rule.refHeight
+            val variants = mutableListOf<TemplateVariant>()
+
+            for (m in scaleMultipliers) {
+                val scale = baseScale * m
+                var targetW = (bmp.width * scale).roundToInt().coerceAtLeast(4)
+                var targetH = (bmp.height * scale).roundToInt().coerceAtLeast(4)
+                if (targetW % 2 != 0) targetW++
+                if (targetH % 2 != 0) targetH++
+
+                val downW = targetW / 2
+                val downH = targetH / 2
+
+                val scaledBmp = if (targetW == bmp.width && targetH == bmp.height) {
+                    bmp
+                } else {
+                    Bitmap.createScaledBitmap(bmp, targetW, targetH, true)
+                }
+                val pixels = IntArray(targetW * targetH)
+                scaledBmp.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
+                if (scaledBmp !== bmp && !scaledBmp.isRecycled) {
+                    scaledBmp.recycle()
+                }
+
+                val tGray = FloatArray(downW * downH)
+                var sumT = 0.0
+                for (dy in 0 until downH) {
+                    val srcY0 = dy * 2
+                    val srcY1 = srcY0 + 1
+                    val r0 = srcY0 * targetW
+                    val r1 = srcY1 * targetW
+                    val dstOffset = dy * downW
+                    for (dx in 0 until downW) {
+                        val srcX0 = dx * 2
+                        val srcX1 = srcX0 + 1
+                        val p00 = pixels[r0 + srcX0]
+                        val p01 = pixels[r0 + srcX1]
+                        val p10 = pixels[r1 + srcX0]
+                        val p11 = pixels[r1 + srcX1]
+
+                        val g00 = (((p00 shr 16) and 0xFF) * 299 + ((p00 shr 8) and 0xFF) * 587 + (p00 and 0xFF) * 114)
+                        val g01 = (((p01 shr 16) and 0xFF) * 299 + ((p01 shr 8) and 0xFF) * 587 + (p01 and 0xFF) * 114)
+                        val g10 = (((p10 shr 16) and 0xFF) * 299 + ((p10 shr 8) and 0xFF) * 587 + (p10 and 0xFF) * 114)
+                        val g11 = (((p11 shr 16) and 0xFF) * 299 + ((p11 shr 8) and 0xFF) * 587 + (p11 and 0xFF) * 114)
+
+                        val avg = (g00 + g01 + g10 + g11) / 4000f
+                        tGray[dstOffset + dx] = avg
+                        sumT += avg
+                    }
+                }
+
+                val n = (downW * downH).toDouble()
+                val meanT = sumT / n
+                val tDiff = FloatArray(downW * downH)
+                var sumDiffSq = 0.0
+                for (i in tGray.indices) {
+                    val diff = (tGray[i] - meanT).toFloat()
+                    tDiff[i] = diff
+                    sumDiffSq += diff * diff
+                }
+                val sigmaT = sqrt(sumDiffSq)
+
+                variants.add(
+                    TemplateVariant(
+                        scaleMultiplier = m,
+                        tDownW = downW,
+                        tDownH = downH,
+                        tDiff = tDiff,
+                        sigmaT = sigmaT
+                    )
+                )
+            }
+
+            result.add(RuleTemplate(rule, bmp, variants))
+        }
+
+        cachedRuleTemplates = result
+        cachedRulesHash = rulesHash
+        cachedScreenWidth = screenWidth
+        cachedScreenHeight = screenHeight
+        return result
+    }
+
+    private fun loadRuleBitmap(rule: com.example.autoclicker.data.SmartRule): Bitmap? {
+        if (rule.builtin) {
+            val assetPath = rule.imageFile ?: return null
+            return try {
+                context.assets.open(assetPath).use { BitmapFactory.decodeStream(it) }
+            } catch (e: Exception) {
+                null
+            }
+        }
+
+        if (!rule.imageFile.isNullOrEmpty() && rule.configDir != null) {
+            val file = File(rule.configDir, File(rule.imageFile).name)
+            if (file.exists()) {
+                return try {
+                    BitmapFactory.decodeFile(file.absolutePath)
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        }
+
+        if (!rule.imageSource.isNullOrEmpty() && rule.imageBox != null && rule.configDir != null) {
+            val cacheKey = "${rule.configDir.name}_${rule.id}"
+            val cached = croppedBitmapsCache[cacheKey]
+            if (cached != null && !cached.isRecycled) {
+                return cached
+            }
+
+            val srcFile = File(rule.configDir, File(rule.imageSource).name)
+            if (srcFile.exists()) {
+                try {
+                    val fullBmp = BitmapFactory.decodeFile(srcFile.absolutePath) ?: return null
+                    val srcW = fullBmp.width
+                    val srcH = fullBmp.height
+                    val box = rule.imageBox
+                    val bX = (box[0] * srcW).toInt().coerceIn(0, srcW - 1)
+                    val bY = (box[1] * srcH).toInt().coerceIn(0, srcH - 1)
+                    val bW = ((box[2] - box[0]) * srcW).toInt().coerceIn(4, srcW - bX)
+                    val bH = ((box[3] - box[1]) * srcH).toInt().coerceIn(4, srcH - bY)
+                    val cropped = Bitmap.createBitmap(fullBmp, bX, bY, bW, bH)
+                    if (cropped !== fullBmp && !fullBmp.isRecycled) {
+                        fullBmp.recycle()
+                    }
+                    croppedBitmapsCache[cacheKey] = cropped
+                    return cropped
+                } catch (e: Exception) {
+                    return null
+                }
+            }
+        }
+
+        return null
+    }
+
+    private fun findMatchInScreenshot(
+        screenshot: Bitmap,
+        ruleTemplate: RuleTemplate
+    ): FoundMatch? {
+        val rule = ruleTemplate.rule
+        val reg = rule.getEffectiveRegion()
+        val roi = createDownsampledRoi(screenshot, reg[0], reg[2], reg[1], reg[3]) ?: return null
+
+        var bestScore = -1f
+        var bestCoords = Pair(0f, 0f)
+
+        for (v in ruleTemplate.variants) {
+            val (score, coords) = searchTemplateInRoi(roi, v)
+            if (score > bestScore) {
+                bestScore = score
+                bestCoords = coords
+            }
+        }
+
+        if (bestScore >= rule.threshold) {
+            val (clickX, clickY) = if (rule.tapTarget == "fixed" && rule.tapX != null && rule.tapY != null) {
+                Pair(rule.tapX * screenshot.width, rule.tapY * screenshot.height)
+            } else {
+                bestCoords
+            }
+
+            val isContinue = rule.id.contains("continue", ignoreCase = true)
+            return FoundMatch(
+                name = rule.id,
+                clickX = clickX,
+                clickY = clickY,
+                score = bestScore,
+                isContinue = isContinue,
+                afterDelayMs = rule.afterDelayMs,
+                rule = rule
+            )
+        }
+        return null
     }
 
     private suspend fun performTapWithHooks(x: Float, y: Float): Boolean {
