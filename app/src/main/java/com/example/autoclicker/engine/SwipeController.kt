@@ -46,15 +46,8 @@ class SwipeController private constructor(
                 stopInternal()
 
                 val settings = settingsRepository.getLatestSettings()
-                if (!settings.isSwipesEnabled) {
-                    EventLogManager.log(
-                        EventLogManager.TAG_CYCLE,
-                        "SWIPES: Режим свайпов выключен в настройках"
-                    )
-                    return@withLock
-                }
 
-                val enabledSwipes = settings.swipes.filter { it.enabled }
+                val enabledSwipes = settings.swipes.filter { it.enabled && it.isConfigured }
                 if (enabledSwipes.isEmpty()) {
                     EventLogManager.log(
                         EventLogManager.TAG_CYCLE,
@@ -121,8 +114,7 @@ class SwipeController private constructor(
 
         while (coroutineScope.isActive) {
             val fresh = settingsRepository.getLatestSettings().getSwipeById(swipeId)
-            val masterEnabled = settingsRepository.getLatestSettings().isSwipesEnabled
-            if (!masterEnabled || !fresh.enabled) {
+            if (!fresh.enabled) {
                 EventLogManager.log(EventLogManager.TAG_CYCLE, "SWIPE #$swipeId завершен (отключен)")
                 break
             }

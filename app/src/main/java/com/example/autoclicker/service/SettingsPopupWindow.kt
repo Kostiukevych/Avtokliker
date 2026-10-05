@@ -319,37 +319,77 @@ class SettingsPopupWindow(
             sliders.add(this)
         }
 
+    private fun showConfirmDialog(title: String, message: String, onConfirm: () -> Unit) {
+        val dialog = android.app.AlertDialog.Builder(context)
+            .setTitle(title)
+            .setMessage(message)
+            .setPositiveButton("Сбросить") { _, _ -> onConfirm() }
+            .setNegativeButton("Отмена", null)
+            .create()
+        dialog.window?.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
+        dialog.show()
+    }
+
     // ===== «ТОЧКИ» =====
     private fun populatePoints(container: LinearLayout) {
         val settings = settingsRepo.getLatestSettings()
+
+        if (settings.isSmartMode) {
+            container.addView(TextView(context).apply {
+                text = "Умный режим включён: точки не нажимаются"
+                setTextColor(Color.parseColor("#FF5252"))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                typeface = Typeface.DEFAULT_BOLD
+                setPadding(dp(4), dp(2), dp(4), dp(8))
+            })
+        }
+
         val activePoints = settings.allPoints.filter { it.enabled }
 
         if (activePoints.isEmpty()) {
             container.addView(emptyText("Нет активных точек.\nВключите нужные точки в приложении."))
-            return
+        } else {
+            for (pt in activePoints) {
+                val card = card()
+                card.addView(
+                    infoRow(
+                        "Точка ${pt.id}",
+                        if (pt.isConfigured) "X=${pt.x.toInt()}  Y=${pt.y.toInt()}" else "не задана",
+                        if (pt.isConfigured) 0xFF8CFF00.toInt() else 0xFFFF5252.toInt()
+                    )
+                )
+                card.addView(
+                    twoButtons(
+                        glassButton(context, "Применить", on = true, textSp = 12f) {
+                            callbacks.onStartPointCalibration(pt.id)
+                        },
+                        glassButton(context, "Тест", hueOffset = 40f, textSp = 12f) {
+                            cycleController.testClick(pt.id)
+                        }.apply { isEnabled = pt.isConfigured }
+                    )
+                )
+                card.addView(
+                    fullButton(
+                        glassButton(context, "Сбросить точку", hueOffset = -90f, textSp = 11f) {
+                            showConfirmDialog("Вы уверены?", "Сбросить точку ${pt.id}?") {
+                                com.example.autoclicker.data.ResetManager.resetPoint(context, pt.id)
+                            }
+                        }, heightDp = 34, bottomDp = 2
+                    )
+                )
+                container.addView(card)
+            }
         }
 
-        for (pt in activePoints) {
-            val card = card()
-            card.addView(
-                infoRow(
-                    "Точка ${pt.id}",
-                    if (pt.isConfigured) "X=${pt.x.toInt()}  Y=${pt.y.toInt()}" else "не задана",
-                    if (pt.isConfigured) 0xFF8CFF00.toInt() else 0xFFFF5252.toInt()
-                )
+        container.addView(
+            fullButton(
+                glassButton(context, "Сбросить все точки", hueOffset = -90f, textSp = 12f) {
+                    showConfirmDialog("Вы уверены?", "Сбросить все 10 точек?") {
+                        com.example.autoclicker.data.ResetManager.resetAllPoints(context)
+                    }
+                }, heightDp = 42, bottomDp = 8
             )
-            card.addView(
-                twoButtons(
-                    glassButton(context, "Применить", on = true, textSp = 12f) {
-                        callbacks.onStartPointCalibration(pt.id)
-                    },
-                    glassButton(context, "Тест", hueOffset = 40f, textSp = 12f) {
-                        cycleController.testClick(pt.id)
-                    }.apply { isEnabled = pt.isConfigured }
-                )
-            )
-            container.addView(card)
-        }
+        )
     }
 
     // ===== «СВАЙПЫ» =====
@@ -359,31 +399,49 @@ class SettingsPopupWindow(
 
         if (activeSwipes.isEmpty()) {
             container.addView(emptyText("Нет активных свайпов.\nВключите нужные свайпы в приложении."))
-            return
+        } else {
+            for (sw in activeSwipes) {
+                val card = card()
+                card.addView(
+                    infoRow(
+                        "Свайп ${sw.id}",
+                        if (sw.isConfigured) "(${sw.startX.toInt()},${sw.startY.toInt()})→(${sw.endX.toInt()},${sw.endY.toInt()})" else "не задан",
+                        if (sw.isConfigured) 0xFF8CFF00.toInt() else 0xFFFF5252.toInt(),
+                        10f
+                    )
+                )
+                card.addView(
+                    twoButtons(
+                        glassButton(context, "Применить", on = true, textSp = 12f) {
+                            callbacks.onStartSwipeCalibration(sw.id, true)
+                        },
+                        glassButton(context, "Тест", hueOffset = 40f, textSp = 12f) {
+                            swipeController.testSwipe(sw.id)
+                        }.apply { isEnabled = sw.isConfigured }
+                    )
+                )
+                card.addView(
+                    fullButton(
+                        glassButton(context, "Сбросить свайп", hueOffset = -90f, textSp = 11f) {
+                            showConfirmDialog("Вы уверены?", "Сбросить свайп ${sw.id}?") {
+                                com.example.autoclicker.data.ResetManager.resetSwipe(context, sw.id)
+                            }
+                        }, heightDp = 34, bottomDp = 2
+                    )
+                )
+                container.addView(card)
+            }
         }
 
-        for (sw in activeSwipes) {
-            val card = card()
-            card.addView(
-                infoRow(
-                    "Свайп ${sw.id}",
-                    if (sw.isConfigured) "(${sw.startX.toInt()},${sw.startY.toInt()})→(${sw.endX.toInt()},${sw.endY.toInt()})" else "не задан",
-                    if (sw.isConfigured) 0xFF8CFF00.toInt() else 0xFFFF5252.toInt(),
-                    10f
-                )
+        container.addView(
+            fullButton(
+                glassButton(context, "Сбросить все свайпы", hueOffset = -90f, textSp = 12f) {
+                    showConfirmDialog("Вы уверены?", "Сбросить все свайпы?") {
+                        com.example.autoclicker.data.ResetManager.resetAllSwipes(context)
+                    }
+                }, heightDp = 42, bottomDp = 8
             )
-            card.addView(
-                twoButtons(
-                    glassButton(context, "Применить", on = true, textSp = 12f) {
-                        callbacks.onStartSwipeCalibration(sw.id, true)
-                    },
-                    glassButton(context, "Тест", hueOffset = 40f, textSp = 12f) {
-                        swipeController.testSwipe(sw.id)
-                    }.apply { isEnabled = sw.isConfigured }
-                )
-            )
-            container.addView(card)
-        }
+        )
     }
 
     // ===== «УМНЫЙ РЕЖИМ» =====
@@ -393,8 +451,19 @@ class SettingsPopupWindow(
 
         container.addView(
             toggle("Умный режим", settings.isSmartMode && isApi30, enabled = isApi30) {
-                settingsRepo.updateSmartMode(it)
+                settingsRepo.updateRunSmart(it)
             }
+        )
+
+        container.addView(
+            fullButton(
+                glassButton(context, "Сбросить умный режим", hueOffset = -90f, textSp = 12f) {
+                    showConfirmDialog("Вы уверены?", "Сбросить умный режим?") {
+                        com.example.autoclicker.data.ResetManager.resetSmartMode(context)
+                        populateContent(WindowType.SMART)
+                    }
+                }, heightDp = 40, bottomDp = 8
+            )
         )
 
         val currentMode = configManager.getMode()
@@ -460,11 +529,36 @@ class SettingsPopupWindow(
         container.addView(
             slider(1, 15, settings.cycleDelayMinutes, { "$it мин" }) { settingsRepo.updateCycleDelay(it) }
         )
+        container.addView(
+            toggle("Первый запуск: все точки", settings.firstCycleAllPoints) {
+                settingsRepo.updateFirstCycleAllPoints(it)
+            }
+        )
+        container.addView(
+            fullButton(
+                glassButton(context, "Сбросить таймер цикла", hueOffset = -90f, textSp = 11f) {
+                    showConfirmDialog("Вы уверены?", "Сбросить таймер цикла?") {
+                        com.example.autoclicker.data.ResetManager.resetCycleDelay(context)
+                        populateContent(WindowType.MORE)
+                    }
+                }, heightDp = 36, bottomDp = 8
+            )
+        )
 
         // Неон: яркость и цвет
         container.addView(neonLabel(context, "ЯРКОСТЬ НЕОНА"))
         container.addView(
             slider(0, 100, settings.neonBrightness, { "$it%" }) { settingsRepo.updateNeonBrightness(it) }
+        )
+        container.addView(
+            fullButton(
+                glassButton(context, "Сбросить яркость неона", hueOffset = -90f, textSp = 11f) {
+                    showConfirmDialog("Вы уверены?", "Сбросить яркость неона?") {
+                        com.example.autoclicker.data.ResetManager.resetNeonBrightness(context)
+                        populateContent(WindowType.MORE)
+                    }
+                }, heightDp = 36, bottomDp = 8
+            )
         )
         container.addView(
             toggle("Автосмена цвета", NeonTheme.isAuto) { NeonTheme.setAuto(it) }
@@ -503,13 +597,34 @@ class SettingsPopupWindow(
                     else macroController.start(settings.macroRepeatCount, settings.macroIntervalSec)
                     populateContent(WindowType.MORE)
                 }.apply { isEnabled = hasMacro || isRunning },
-                glassButton(context, "Очистить", hueOffset = -60f, textSp = 12f) {
-                    settingsRepo.clearMacro()
-                    populateContent(WindowType.MORE)
+                glassButton(context, "Удалить макрос", hueOffset = -60f, textSp = 12f) {
+                    showConfirmDialog("Вы уверены?", "Удалить записанный макрос?") {
+                        com.example.autoclicker.data.ResetManager.deleteAllMacros(context)
+                        populateContent(WindowType.MORE)
+                    }
                 }.apply { isEnabled = hasMacro }
             )
         )
         container.addView(macroCard)
+
+        // Сброс всего
+        container.addView(neonLabel(context, "СБРОС"))
+        container.addView(
+            fullButton(glassButton(context, "Удалить загруженные конфиги", 40f, 16f, -90f, false, 11f) {
+                showConfirmDialog("Вы уверены?", "Удалить все пользовательские конфиги?") {
+                    com.example.autoclicker.data.ResetManager.deleteAllCustomConfigs(context)
+                    populateContent(WindowType.MORE)
+                }
+            }, 40, 6)
+        )
+        container.addView(
+            fullButton(glassButton(context, "Сбросить ВСЁ", 44f, 18f, -110f, false, 12f) {
+                showConfirmDialog("Вы уверены?", "Сбросить абсолютно все настройки, точки и режимы?") {
+                    com.example.autoclicker.data.ResetManager.resetAll(context)
+                    populateContent(WindowType.MORE)
+                }
+            }.apply { setTextColor(0xFFFF8A80.toInt()) }, 44, 10)
+        )
 
         // Остальное
         container.addView(

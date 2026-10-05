@@ -246,7 +246,8 @@ class CycleController private constructor(
         while (true) {
             coroutineContext.ensureActive()
 
-            if (isFirstRun) {
+            val firstCycleAll = settingsRepository.getLatestSettings().firstCycleAllPoints
+            if (isFirstRun && !firstCycleAll) {
                 // 1. Первый запуск: 2 секунды обратного отсчета
                 _status.value = CycleStatus.RUNNING
                 _nextAction.value = "Point 1"
@@ -277,6 +278,23 @@ class CycleController private constructor(
 
                 isFirstRun = false
             } else {
+                if (isFirstRun) {
+                    // Первый запуск при включённой настройке «Первый запуск: все точки»:
+                    // короткая пауза на переключение в игру и затем нажимаются ВСЕ включённые точки.
+                    isFirstRun = false
+                    _status.value = CycleStatus.RUNNING
+                    _currentAction.value = "Старт: все точки через 2с"
+                    _countdownText.value = "2s"
+                    _remainingSeconds.value = 2
+                    delay(2000L)
+                    coroutineContext.ensureActive()
+                    _countdownText.value = ""
+                    _remainingSeconds.value = 0
+                    EventLogManager.log(
+                        EventLogManager.TAG_CYCLE,
+                        "CYCLE: первый запуск, нажимаются все включённые точки"
+                    )
+                }
                 // В последующих циклах выполняются по очереди: Point 1 -> пауза 1с -> Point 2 -> пауза 1с -> Point 3
                 val currentCycle = _cycleNumber.value
 

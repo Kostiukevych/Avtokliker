@@ -1,37 +1,47 @@
 package com.example.autoclicker.ui.screens
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.autoclicker.data.LogExporter
+import com.example.autoclicker.data.LogFileManager
 import com.example.autoclicker.ui.theme.AccentAmber
 import com.example.autoclicker.ui.theme.AccentGreen
 import com.example.autoclicker.ui.theme.AccentRed
 import com.example.autoclicker.ui.theme.GlassButton
+import com.example.autoclicker.ui.theme.GlassDialog
 import com.example.autoclicker.ui.theme.GlassLabel
 import com.example.autoclicker.ui.theme.GlassPanel
 import com.example.autoclicker.ui.theme.TextMuted
 import com.example.autoclicker.ui.theme.TextPrimary
+import com.example.autoclicker.ui.theme.TextSecondary
 
 @Composable
 fun EventLogView(
@@ -39,29 +49,101 @@ fun EventLogView(
     onClearLogs: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    var showClearConfirm by remember { mutableStateOf(false) }
+
+    val logFiles = remember(logs) { LogFileManager.listLogFiles() }
+    val totalSize = remember(logs) { LogFileManager.totalSizeBytes() }
+    val sizeKb = totalSize / 1024
+
     GlassPanel(
         modifier = modifier
             .fillMaxWidth()
             .testTag("event_log_container")
     ) {
+        GlassLabel("ЖУРНАЛ СОБЫТИЙ (ПОСЛЕДНИЕ 30)")
+
+        // Строка с количеством файлов и размером
+        Text(
+            text = "Файлов логов: ${logFiles.size}, размер $sizeKb КБ, хранятся 7 суток",
+            color = TextSecondary,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
+        )
+
+        // Ряд кнопок: «Скопировать», «Скачать», «Поделиться», «Очистить»
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            GlassLabel("ЖУРНАЛ СОБЫТИЙ (ПОСЛЕДНИЕ 30)", Modifier.weight(1f))
             GlassButton(
-                onClick = onClearLogs,
-                modifier = Modifier.width(96.dp),
-                height = 38.dp,
-                cornerRadius = 19.dp,
+                onClick = {
+                    val ok = LogExporter.copyToClipboard(context)
+                    if (!ok) {
+                        Toast.makeText(context, "Логов нет", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "Логи скопированы", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                height = 36.dp,
+                cornerRadius = 16.dp,
+                hueOffset = 10f
+            ) {
+                Text("Скопировать", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+
+            GlassButton(
+                onClick = {
+                    val fileName = LogExporter.saveToDownloads(context)
+                    if (fileName != null) {
+                        Toast.makeText(context, "Сохранено в Загрузки: $fileName", Toast.LENGTH_LONG).show()
+                    } else {
+                        val shareIntent = LogExporter.createShareIntent(context)
+                        if (shareIntent != null) {
+                            context.startActivity(shareIntent)
+                        } else {
+                            Toast.makeText(context, "Логов нет", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                height = 36.dp,
+                cornerRadius = 16.dp,
+                hueOffset = 25f
+            ) {
+                Text("Скачать", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+
+            GlassButton(
+                onClick = {
+                    val shareIntent = LogExporter.createShareIntent(context)
+                    if (shareIntent != null) {
+                        context.startActivity(shareIntent)
+                    } else {
+                        Toast.makeText(context, "Логов нет", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                height = 36.dp,
+                cornerRadius = 16.dp,
+                hueOffset = 40f
+            ) {
+                Text("Поделиться", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+
+            GlassButton(
+                onClick = { showClearConfirm = true },
+                modifier = Modifier.weight(1f),
+                height = 36.dp,
+                cornerRadius = 16.dp,
                 hueOffset = -60f
             ) {
-                Text("Очистить", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text("Очистить", color = AccentRed, fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
         }
 
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         Box(
             modifier = Modifier
@@ -101,6 +183,25 @@ fun EventLogView(
                         )
                     }
                 }
+            }
+        }
+
+        if (showClearConfirm) {
+            GlassDialog(
+                title = "Вы уверены?",
+                onDismissRequest = { showClearConfirm = false },
+                onConfirm = {
+                    showClearConfirm = false
+                    onClearLogs()
+                },
+                confirmText = "Очистить",
+                cancelText = "Отмена"
+            ) {
+                Text(
+                    text = "Все события и файлы логов будут безвозвратно удалены.",
+                    color = Color.White,
+                    fontSize = 14.sp
+                )
             }
         }
     }

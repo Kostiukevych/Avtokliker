@@ -10,6 +10,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -35,6 +39,7 @@ fun SingleSwipeContent(
     onDurationChange: (Long) -> Unit,
     onIntervalChange: (Int) -> Unit,
     onTestSwipe: () -> Unit,
+    onResetSwipe: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
@@ -144,6 +149,46 @@ fun SingleSwipeContent(
                 fontWeight = FontWeight.Bold,
                 fontSize = 13.sp
             )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        var showResetConfirm by remember { mutableStateOf(false) }
+
+        // Кнопка сброса свайпа
+        GlassButton(
+            onClick = { showResetConfirm = true },
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("reset_swipe_${swipe.id}_btn"),
+            height = 42.dp,
+            hueOffset = -90f
+        ) {
+            Text(
+                text = "Сбросить свайп",
+                color = AccentRed,
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp
+            )
+        }
+
+        if (showResetConfirm) {
+            com.example.autoclicker.ui.theme.GlassDialog(
+                title = "Вы уверены?",
+                onDismissRequest = { showResetConfirm = false },
+                onConfirm = {
+                    showResetConfirm = false
+                    onResetSwipe()
+                },
+                confirmText = "Сбросить",
+                cancelText = "Отмена"
+            ) {
+                Text(
+                    text = "Сбросить параметры и координаты свайпа #${swipe.id}?",
+                    color = Color.White,
+                    fontSize = 14.sp
+                )
+            }
         }
     }
 }

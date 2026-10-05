@@ -94,6 +94,9 @@ class SettingsRepository private constructor(val context: Context) {
         val macroIntervalSec = prefs.getInt(KEY_MACRO_INTERVAL_SEC, 0)
         val neonBrightness = prefs.getInt(KEY_NEON_BRIGHTNESS, 85)
         com.example.autoclicker.ui.theme.NeonTheme.brightness = neonBrightness / 100f
+        val runPoints = prefs.getBoolean(KEY_RUN_POINTS, true)
+        val runSwipes = prefs.getBoolean(KEY_RUN_SWIPES, false)
+        val firstCycleAllPoints = prefs.getBoolean(KEY_FIRST_CYCLE_ALL_POINTS, true)
 
         return ClickerSettings(
             point1 = p1,
@@ -119,7 +122,10 @@ class SettingsRepository private constructor(val context: Context) {
             recordedMacro = recordedMacro,
             macroRepeatCount = macroRepeatCount,
             macroIntervalSec = macroIntervalSec,
-            neonBrightness = neonBrightness
+            neonBrightness = neonBrightness,
+            runPoints = runPoints,
+            runSwipes = runSwipes,
+            firstCycleAllPoints = firstCycleAllPoints
         )
     }
 
@@ -262,6 +268,123 @@ class SettingsRepository private constructor(val context: Context) {
         _settings.value = loadSettings()
     }
 
+    // ---------- Что запускать по START ----------
+
+    /** Группа «Точки». Взаимоисключается с умным режимом: включение точек выключает умный режим. */
+    fun updateRunPoints(enabled: Boolean) {
+        val editor = prefs.edit().putBoolean(KEY_RUN_POINTS, enabled)
+        if (enabled) editor.putBoolean(KEY_SMART_MODE, false)
+        editor.apply()
+        _settings.value = loadSettings()
+    }
+
+    /** Группа «Свайпы». Можно включать вместе с любой другой. */
+    fun updateRunSwipes(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_RUN_SWIPES, enabled).apply()
+        _settings.value = loadSettings()
+    }
+
+    /** Группа «Умный режим». Взаимоисключается с точками. */
+    fun updateRunSmart(enabled: Boolean) {
+        val editor = prefs.edit().putBoolean(KEY_SMART_MODE, enabled)
+        if (enabled) editor.putBoolean(KEY_RUN_POINTS, false)
+        editor.apply()
+        _settings.value = loadSettings()
+    }
+
+    fun updateFirstCycleAllPoints(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_FIRST_CYCLE_ALL_POINTS, enabled).apply()
+        _settings.value = loadSettings()
+    }
+
+    // ---------- Сбросы ----------
+
+    private fun removePointKeys(editor: SharedPreferences.Editor, id: Int) {
+        editor.remove("point${id}_x")
+        editor.remove("point${id}_y")
+        editor.remove("point${id}_enabled")
+        editor.remove("point${id}_count")
+        editor.remove("point${id}_interval")
+    }
+
+    private fun removeSwipeKeys(editor: SharedPreferences.Editor, id: Int) {
+        editor.remove("swipe${id}_start_x")
+        editor.remove("swipe${id}_start_y")
+        editor.remove("swipe${id}_end_x")
+        editor.remove("swipe${id}_end_y")
+        editor.remove("swipe${id}_duration_ms")
+        editor.remove("swipe${id}_interval_sec")
+        editor.remove("swipe${id}_enabled")
+    }
+
+    /** Сброс одной точки к значениям по умолчанию (координаты стираются). */
+    fun resetPoint(pointId: Int) {
+        if (pointId !in 1..10) return
+        val editor = prefs.edit()
+        removePointKeys(editor, pointId)
+        editor.apply()
+        _settings.value = loadSettings()
+    }
+
+    /** Сброс всех 10 точек и сохранённой при калибровке информации об экране. */
+    fun resetAllPoints() {
+        val editor = prefs.edit()
+        for (id in 1..10) removePointKeys(editor, id)
+        editor.remove(KEY_POINTS_ORIENTATION)
+        editor.remove(KEY_POINTS_SCREEN_WIDTH)
+        editor.remove(KEY_POINTS_SCREEN_HEIGHT)
+        editor.apply()
+        _settings.value = loadSettings()
+    }
+
+    /** Сброс одного свайпа. */
+    fun resetSwipe(swipeId: Int) {
+        if (swipeId !in 1..3) return
+        val editor = prefs.edit()
+        removeSwipeKeys(editor, swipeId)
+        editor.apply()
+        _settings.value = loadSettings()
+    }
+
+    /** Сброс всех свайпов. */
+    fun resetAllSwipes() {
+        val editor = prefs.edit()
+        for (id in 1..3) removeSwipeKeys(editor, id)
+        editor.remove(KEY_SWIPES_ENABLED)
+        editor.remove(KEY_RUN_SWIPES)
+        editor.apply()
+        _settings.value = loadSettings()
+    }
+
+    /** Сброс флагов умного режима (режим и выбор конфига сбрасывает ResetManager). */
+    fun resetSmartFlags() {
+        prefs.edit()
+            .remove(KEY_SMART_MODE)
+            .remove(KEY_DEBUG_SCREENSHOTS)
+            .apply()
+        _settings.value = loadSettings()
+    }
+
+    fun resetCycleDelay() {
+        prefs.edit().remove(KEY_CYCLE_DELAY_MINUTES).apply()
+        _settings.value = loadSettings()
+    }
+
+    fun resetNeonBrightness() {
+        prefs.edit().remove(KEY_NEON_BRIGHTNESS).apply()
+        com.example.autoclicker.ui.theme.NeonTheme.brightness = 85 / 100f
+        _settings.value = loadSettings()
+    }
+
+    fun resetRunGroups() {
+        prefs.edit()
+            .remove(KEY_RUN_POINTS)
+            .remove(KEY_RUN_SWIPES)
+            .remove(KEY_FIRST_CYCLE_ALL_POINTS)
+            .apply()
+        _settings.value = loadSettings()
+    }
+
     fun getLatestSettings(): ClickerSettings = _settings.value
 
     companion object {
@@ -298,6 +421,9 @@ class SettingsRepository private constructor(val context: Context) {
         private const val KEY_SMART_MODE = "is_smart_mode"
         private const val KEY_DEBUG_SCREENSHOTS = "is_debug_screenshots"
         private const val KEY_SWIPES_ENABLED = "is_swipes_enabled"
+        private const val KEY_RUN_POINTS = "run_points"
+        private const val KEY_RUN_SWIPES = "run_swipes"
+        private const val KEY_FIRST_CYCLE_ALL_POINTS = "first_cycle_all_points"
 
         private const val KEY_MACRO_JSON = "macro_json"
         private const val KEY_MACRO_REPEAT_COUNT = "macro_repeat_count"

@@ -85,11 +85,50 @@ class MainActivity : ComponentActivity() {
                     onUpdateSmartMode = { enabled ->
                         viewModel.updateSmartMode(enabled)
                     },
+                    onUpdateRunPoints = { enabled ->
+                        viewModel.updateRunPoints(enabled)
+                    },
+                    onUpdateRunSwipes = { enabled ->
+                        viewModel.updateRunSwipes(enabled)
+                    },
+                    onUpdateRunSmart = { enabled ->
+                        viewModel.updateRunSmart(enabled)
+                    },
+                    onUpdateFirstCycleAllPoints = { enabled ->
+                        viewModel.updateFirstCycleAllPoints(enabled)
+                    },
+                    onResetPoint = { id ->
+                        viewModel.resetPoint(id)
+                    },
+                    onResetAllPoints = {
+                        viewModel.resetAllPoints()
+                    },
+                    onResetSwipe = { id ->
+                        viewModel.resetSwipe(id)
+                    },
+                    onResetAllSwipes = {
+                        viewModel.resetAllSwipes()
+                    },
+                    onDeleteAllMacros = {
+                        viewModel.clearMacro()
+                    },
+                    onResetSmartMode = {
+                        viewModel.resetSmartMode()
+                    },
+                    onResetCycleDelay = {
+                        viewModel.resetCycleDelay()
+                    },
+                    onResetNeonBrightness = {
+                        viewModel.resetNeonBrightness()
+                    },
+                    onResetAll = {
+                        viewModel.resetAll()
+                    },
+                    onDeleteAllCustomConfigs = {
+                        viewModel.deleteAllCustomConfigs()
+                    },
                     onUpdateDebugScreenshots = { enabled ->
                         viewModel.updateDebugScreenshots(enabled)
-                    },
-                    onUpdateSwipesMasterEnabled = { enabled ->
-                        viewModel.updateSwipesMasterEnabled(enabled)
                     },
                     onUpdateSwipeConfig = { id, enabled, duration, interval ->
                         viewModel.updateSwipeConfig(id, enabled, duration, interval)

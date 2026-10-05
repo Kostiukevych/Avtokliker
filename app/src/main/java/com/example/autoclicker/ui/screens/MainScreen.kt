@@ -114,6 +114,20 @@ fun MainScreen(
     onUpdatePointConfig: (Int, Boolean, Int, Int) -> Unit,
     onUpdateCycleDelay: (Int) -> Unit,
     onUpdateSmartMode: (Boolean) -> Unit = {},
+    onUpdateRunPoints: (Boolean) -> Unit = {},
+    onUpdateRunSwipes: (Boolean) -> Unit = {},
+    onUpdateRunSmart: (Boolean) -> Unit = {},
+    onUpdateFirstCycleAllPoints: (Boolean) -> Unit = {},
+    onResetPoint: (Int) -> Unit = {},
+    onResetAllPoints: () -> Unit = {},
+    onResetSwipe: (Int) -> Unit = {},
+    onResetAllSwipes: () -> Unit = {},
+    onDeleteAllMacros: () -> Unit = {},
+    onResetSmartMode: () -> Unit = {},
+    onResetCycleDelay: () -> Unit = {},
+    onResetNeonBrightness: () -> Unit = {},
+    onResetAll: () -> Unit = {},
+    onDeleteAllCustomConfigs: () -> Unit = {},
     onUpdateDebugScreenshots: (Boolean) -> Unit = {},
     onUpdateSwipesMasterEnabled: (Boolean) -> Unit = {},
     onUpdateSwipeConfig: (Int, Boolean, Long, Int) -> Unit = { _, _, _, _ -> },
@@ -140,6 +154,7 @@ fun MainScreen(
     var editingPointId by remember { mutableStateOf<Int?>(null) }
     var editingSwipeId by remember { mutableStateOf<Int?>(null) }
     var isMacroDialogVisible by remember { mutableStateOf(false) }
+    var confirmDialogState by remember { mutableStateOf<Triple<String, String, () -> Unit>?>(null) }
 
     // Выпадающее меню под бургером
     var isMenuOpen by remember { mutableStateOf(false) }
@@ -256,6 +271,13 @@ fun MainScreen(
                         formattedValue = "${settings.cycleDelayMinutes} мин",
                         icon = { ClockIcon() }
                     )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    GlassSwitch(
+                        text = "Первый запуск: все точки",
+                        checked = settings.firstCycleAllPoints,
+                        onCheckedChange = onUpdateFirstCycleAllPoints,
+                        modifier = Modifier.testTag("first_cycle_all_points_switch")
+                    )
 
                     // ----- РЕЖИМ -----
                     GlassLabel("РЕЖИМ")
@@ -263,7 +285,7 @@ fun MainScreen(
                     GlassSwitch(
                         text = if (!isApi30) "Умный режим (нужен Android 11+)" else "Умный режим",
                         checked = settings.isSmartMode && isApi30,
-                        onCheckedChange = { if (isApi30) onUpdateSmartMode(it) },
+                        onCheckedChange = { if (isApi30) onUpdateRunSmart(it) },
                         modifier = Modifier.testTag("smart_mode_switch")
                     )
                     Spacer(modifier = Modifier.height(10.dp))
@@ -281,9 +303,31 @@ fun MainScreen(
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(start = 8.dp)
                     )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    GlassButton(
+                        onClick = {
+                            confirmDialogState = Triple(
+                                "Вы уверены?",
+                                "Сбросить флаги и активный конфиг умного режима к исходным?"
+                            ) { onResetSmartMode() }
+                        },
+                        modifier = Modifier.fillMaxWidth().height(42.dp),
+                        hueOffset = -90f
+                    ) {
+                        Text("Сбросить умный режим", color = AccentRed, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
 
                     // ----- ПОИНТЫ -----
                     GlassLabel("ПОИНТЫ (ТОЧКИ НАЖАТИЯ)")
+                    if (settings.isSmartMode) {
+                        Text(
+                            text = "Умный режим включён: точки не нажимаются",
+                            color = AccentRed,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(start = 8.dp, bottom = 6.dp)
+                        )
+                    }
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         for (rowStart in listOf(1, 6)) {
                             Row(
@@ -302,23 +346,29 @@ fun MainScreen(
                             }
                         }
                     }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    GlassButton(
+                        onClick = {
+                            confirmDialogState = Triple(
+                                "Вы уверены?",
+                                "Сбросить координаты и настройки всех 10 точек?"
+                            ) { onResetAllPoints() }
+                        },
+                        modifier = Modifier.fillMaxWidth().height(42.dp),
+                        hueOffset = -90f
+                    ) {
+                        Text("Сбросить все точки", color = AccentRed, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
 
                     // ----- СВАЙПЫ -----
                     GlassLabel("СВАЙПЫ")
-                    GlassSwitch(
-                        text = "Свайпы включены",
-                        checked = settings.isSwipesEnabled,
-                        onCheckedChange = onUpdateSwipesMasterEnabled,
-                        modifier = Modifier.testTag("swipes_master_switch")
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         for (i in 1..3) {
                             val sw = settings.swipes.find { it.id == i }
-                            val isSwOn = sw?.enabled == true && settings.isSwipesEnabled
+                            val isSwOn = sw?.enabled == true
                             GlassButton(
                                 onClick = { editingSwipeId = i },
                                 modifier = Modifier.weight(1f),
@@ -330,6 +380,19 @@ fun MainScreen(
                                 Text("Свайп $i", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF4F6FC))
                             }
                         }
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    GlassButton(
+                        onClick = {
+                            confirmDialogState = Triple(
+                                "Вы уверены?",
+                                "Сбросить параметры и координаты всех свайпов?"
+                            ) { onResetAllSwipes() }
+                        },
+                        modifier = Modifier.fillMaxWidth().height(42.dp),
+                        hueOffset = -90f
+                    ) {
+                        Text("Сбросить все свайпы", color = AccentRed, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     }
 
                     // ----- ЗАПИСЬ МАКРОСА -----
@@ -426,6 +489,31 @@ fun MainScreen(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
+                    // ----- ЧТО ЗАПУСКАТЬ -----
+                    GlassLabel("ЧТО ЗАПУСКАТЬ")
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        GlassSwitch(
+                            text = "Точки",
+                            checked = settings.runPoints,
+                            onCheckedChange = onUpdateRunPoints,
+                            modifier = Modifier.testTag("run_points_switch")
+                        )
+                        GlassSwitch(
+                            text = "Свайпы",
+                            checked = settings.runSwipes,
+                            onCheckedChange = onUpdateRunSwipes,
+                            modifier = Modifier.testTag("run_swipes_switch")
+                        )
+                        GlassSwitch(
+                            text = "Умный режим",
+                            checked = settings.isSmartMode,
+                            onCheckedChange = onUpdateRunSmart,
+                            modifier = Modifier.testTag("run_smart_switch")
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -503,7 +591,11 @@ fun MainScreen(
                         onTestClick = { onTestClick(ptId) },
                         onToggleEnabled = { en -> onUpdatePointConfig(ptId, en, pt.clickCount, pt.intervalSec) },
                         onCountChange = { cnt -> onUpdatePointConfig(ptId, pt.enabled, cnt, pt.intervalSec) },
-                        onIntervalChange = { intv -> onUpdatePointConfig(ptId, pt.enabled, pt.clickCount, intv) }
+                        onIntervalChange = { intv -> onUpdatePointConfig(ptId, pt.enabled, pt.clickCount, intv) },
+                        onResetPoint = {
+                            editingPointId = null
+                            onResetPoint(ptId)
+                        }
                     )
                 }
             }
@@ -522,7 +614,11 @@ fun MainScreen(
                         onToggleEnabled = { en -> onUpdateSwipeConfig(swId, en, sw.durationMs, sw.intervalSec) },
                         onDurationChange = { dur -> onUpdateSwipeConfig(swId, sw.enabled, dur, sw.intervalSec) },
                         onIntervalChange = { intv -> onUpdateSwipeConfig(swId, sw.enabled, sw.durationMs, intv) },
-                        onTestSwipe = { onTestSwipe(swId) }
+                        onTestSwipe = { onTestSwipe(swId) },
+                        onResetSwipe = {
+                            editingSwipeId = null
+                            onResetSwipe(swId)
+                        }
                     )
                 }
             }
@@ -546,9 +642,26 @@ fun MainScreen(
                             isMacroDialogVisible = false
                             onStartMacroRecording()
                         },
-                        onClearMacro = onClearMacro,
+                        onClearMacro = onDeleteAllMacros,
                         onUpdateConfig = onUpdateMacroConfig
                     )
+                }
+            }
+
+            // ===== ДИАЛОГ ПОДТВЕРЖДЕНИЯ СБРОСА =====
+            if (confirmDialogState != null) {
+                val (title, msg, onConfirm) = confirmDialogState!!
+                GlassDialog(
+                    title = title,
+                    onDismissRequest = { confirmDialogState = null },
+                    onConfirm = {
+                        confirmDialogState = null
+                        onConfirm()
+                    },
+                    confirmText = "Сбросить",
+                    cancelText = "Отмена"
+                ) {
+                    Text(msg, color = Color.White, fontSize = 14.sp)
                 }
             }
 
@@ -747,6 +860,143 @@ fun MainScreen(
                                         }
                                     }
                                 }
+                            }
+                        }
+
+                        // ----- БЛОК СБРОС -----
+                        GlassLabel("СБРОС")
+                        GlassButton(
+                            onClick = {
+                                confirmDialogState = Triple(
+                                    "Вы уверены?",
+                                    "Сбросить время цикла на 7 минут?"
+                                ) { onResetCycleDelay() }
+                            },
+                            modifier = Modifier.fillMaxWidth().height(44.dp),
+                            cornerRadius = 22.dp,
+                            hueOffset = -90f
+                        ) {
+                            Text("Сбросить таймер цикла", color = AccentRed, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        GlassButton(
+                            onClick = {
+                                confirmDialogState = Triple(
+                                    "Вы уверены?",
+                                    "Сбросить яркость неона на 85%?"
+                                ) { onResetNeonBrightness() }
+                            },
+                            modifier = Modifier.fillMaxWidth().height(44.dp),
+                            cornerRadius = 22.dp,
+                            hueOffset = -90f
+                        ) {
+                            Text("Сбросить яркость неона", color = AccentRed, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        GlassButton(
+                            onClick = {
+                                confirmDialogState = Triple(
+                                    "Вы уверены?",
+                                    "Удалить все загруженные пользовательские конфиги?"
+                                ) {
+                                    onDeleteAllCustomConfigs()
+                                    configList = configManager.listConfigs()
+                                    activeConfigName = configManager.getActiveName()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().height(44.dp),
+                            cornerRadius = 22.dp,
+                            hueOffset = -90f
+                        ) {
+                            Text("Удалить загруженные конфиги", color = AccentRed, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        GlassButton(
+                            onClick = {
+                                confirmDialogState = Triple(
+                                    "Вы уверены?",
+                                    "Сбросить абсолютно ВСЕ настройки автокликера?"
+                                ) { onResetAll() }
+                            },
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                            cornerRadius = 24.dp,
+                            hueOffset = -110f
+                        ) {
+                            Text("Сбросить ВСЁ", color = Color(0xFFFF5252), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        // ----- БЛОК ЖУРНАЛ СОБЫТИЙ В МЕНЮ -----
+                        GlassLabel("ЖУРНАЛ СОБЫТИЙ")
+                        val menuLogFiles = remember(logs) { com.example.autoclicker.data.LogFileManager.listLogFiles() }
+                        val menuLogSize = remember(logs) { com.example.autoclicker.data.LogFileManager.totalSizeBytes() }
+                        val menuSizeKb = menuLogSize / 1024
+                        Text(
+                            text = "Файлов логов: ${menuLogFiles.size}, размер $menuSizeKb КБ, хранятся 7 суток",
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(start = 6.dp, bottom = 6.dp)
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            GlassButton(
+                                onClick = {
+                                    val ok = com.example.autoclicker.data.LogExporter.copyToClipboard(context)
+                                    if (!ok) Toast.makeText(context, "Логов нет", Toast.LENGTH_SHORT).show()
+                                    else Toast.makeText(context, "Логи скопированы", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.weight(1f),
+                                height = 36.dp,
+                                cornerRadius = 16.dp,
+                                hueOffset = 10f
+                            ) {
+                                Text("Копия", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                            GlassButton(
+                                onClick = {
+                                    val name = com.example.autoclicker.data.LogExporter.saveToDownloads(context)
+                                    if (name != null) {
+                                        Toast.makeText(context, "Сохранено в Загрузки: $name", Toast.LENGTH_LONG).show()
+                                    } else {
+                                        val share = com.example.autoclicker.data.LogExporter.createShareIntent(context)
+                                        if (share != null) context.startActivity(share)
+                                        else Toast.makeText(context, "Логов нет", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                height = 36.dp,
+                                cornerRadius = 16.dp,
+                                hueOffset = 25f
+                            ) {
+                                Text("Скачать", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                            GlassButton(
+                                onClick = {
+                                    val share = com.example.autoclicker.data.LogExporter.createShareIntent(context)
+                                    if (share != null) context.startActivity(share)
+                                    else Toast.makeText(context, "Логов нет", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.weight(1f),
+                                height = 36.dp,
+                                cornerRadius = 16.dp,
+                                hueOffset = 40f
+                            ) {
+                                Text("Поделиться", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
+                            GlassButton(
+                                onClick = {
+                                    confirmDialogState = Triple(
+                                        "Вы уверены?",
+                                        "Очистить все файлы логов и события?"
+                                    ) { onClearLogs() }
+                                },
+                                modifier = Modifier.weight(1f),
+                                height = 36.dp,
+                                cornerRadius = 16.dp,
+                                hueOffset = -60f
+                            ) {
+                                Text("Очистить", color = AccentRed, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }

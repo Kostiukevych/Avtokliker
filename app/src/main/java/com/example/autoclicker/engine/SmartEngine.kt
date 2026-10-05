@@ -90,6 +90,24 @@ class SmartEngine private constructor(
     val isRunning: Boolean
         get() = _status.value != CycleStatus.STOPPED && engineJob?.isActive == true
 
+    // Диагностика: причина завершения цикла и счётчики для heartbeat
+    @Volatile
+    private var endReason: String? = null
+    private var scanCount = 0L
+    private var nullShotCount = 0L
+    private var matchCount = 0L
+
+    private fun callerInfo(): String {
+        return try {
+            Throwable().stackTrace
+                .filter { it.className.startsWith("com.example.autoclicker") && !it.className.contains("SmartEngine") }
+                .take(2)
+                .joinToString(" <- ") { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }
+        } catch (t: Throwable) {
+            ""
+        }
+    }
+
     enum class SmartState {
         LOBBY_SEARCH_START,       // В лобби, поиск кнопки «НАЧАТЬ»
         WAITING_MATCH_START,      // «НАЧАТЬ» нажата, ожидание подбора/загрузки матча
@@ -190,6 +208,10 @@ class SmartEngine private constructor(
                     return@withLock
                 }
 
+                endReason = null
+                scanCount = 0L
+                nullShotCount = 0L
+                matchCount = 0L
                 _cycleNumber.value = 1
                 _status.value = CycleStatus.RUNNING
                 _lastAction.value = "START (Smart)"
@@ -230,11 +252,16 @@ class SmartEngine private constructor(
                             "SMART: ОШИБКА в цикле: ${t.javaClass.simpleName}: ${t.message ?: ""} @ $traceStr",
                             isError = true
                         )
+                        endReason = "необработанная ошибка: ${t.javaClass.simpleName}"
                         EventLogManager.log(
                             EventLogManager.TAG_AUTO_CLICKER,
                             "SMART: остановка, причина: ошибки"
                         )
                     } finally {
+                        EventLogManager.log(
+                            EventLogManager.TAG_AUTO_CLICKER,
+                            "SMART: цикл завершён, причина: ${endReason ?: "внешняя отмена корутины"}"
+                        )
                         engineMutex.withLock {
                             if (engineJob === currentJob) {
                                 engineJob = null
@@ -250,22 +277,28 @@ class SmartEngine private constructor(
         return true
     }
 
-    suspend fun stopInternal(reason: String = "кнопка Стоп") {
+    suspend fun stopInternal(reason: String = "кнопка Стоп", caller: String = "") {
         val jobToCancel: Job?
         engineMutex.withLock {
             jobToCancel = engineJob
             engineJob = null
+            endReason = reason
             resetState()
             clearScreensDir()
             _lastAction.value = "STOP"
-            EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "SMART: остановка, причина: $reason")
+            val who = if (caller.isNotEmpty()) " (вызвал: $caller)" else ""
+            EventLogManager.log(
+                EventLogManager.TAG_AUTO_CLICKER,
+                "SMART: остановка, причина: $reason$who"
+            )
         }
         jobToCancel?.cancelAndJoin()
     }
 
     fun stop(reason: String = "кнопка Стоп") {
+        val caller = callerInfo()
         coroutineScope.launch {
-            stopInternal(reason)
+            stopInternal(reason, caller)
         }
     }
 
@@ -302,6 +335,9 @@ class SmartEngine private constructor(
 
         var lastMatchTime = System.currentTimeMillis()
         val idleTimeoutMs = effectiveConfig.idleTimeoutMin * 60 * 1000L
+        var lastIdleWarnTime = System.currentTimeMillis()
+        var lastHeartbeatTime = System.currentTimeMillis()
+        var serviceLostSince = 0L
         var consecutiveErrors = 0
         var lastLoggedSize = ""
 
@@ -310,26 +346,46 @@ class SmartEngine private constructor(
         while (true) {
             try {
                 coroutineContext.ensureActive()
+                val loopStart = System.currentTimeMillis()
 
                 val service = AccessibilityServiceHolder.service.value
                 if (service == null) {
+                    val nowLost = System.currentTimeMillis()
+                    if (serviceLostSince == 0L) {
+                        serviceLostSince = nowLost
+                        EventLogManager.log(
+                            EventLogManager.TAG_AUTO_CLICKER,
+                            "SMART: сервис доступности отключён, жду переподключения (до 5 мин)",
+                            isError = true
+                        )
+                    }
+                    if (nowLost - serviceLostSince > 5 * 60 * 1000L) {
+                        endReason = "сервис доступности недоступен более 5 минут"
+                        EventLogManager.log(
+                            EventLogManager.TAG_AUTO_CLICKER,
+                            "SMART: остановка, причина: $endReason"
+                        )
+                        resetState()
+                        clearScreensDir()
+                        return
+                    }
+                    _currentAction.value = "Ожидание сервиса доступности..."
+                    delay(2000L)
+                    continue
+                }
+                if (serviceLostSince != 0L) {
                     EventLogManager.log(
                         EventLogManager.TAG_AUTO_CLICKER,
-                        "ERROR: AccessibilityService unavailable. Сервис отключен.",
-                        isError = true
+                        "SMART: сервис доступности снова подключён (простой ${(System.currentTimeMillis() - serviceLostSince) / 1000} с)"
                     )
-                    EventLogManager.log(
-                        EventLogManager.TAG_AUTO_CLICKER,
-                        "SMART: остановка, причина: сервис доступности отключён"
-                    )
-                    resetState()
-                    clearScreensDir()
-                    return
+                    serviceLostSince = 0L
                 }
 
                 _currentAction.value = "Поиск правил (${effectiveConfig.rules.size} шт.)..."
 
+                scanCount++
                 val screenshot = service.takeScreenshotBitmap()
+                if (screenshot == null) nullShotCount++
                 if (screenshot != null && !screenshot.isRecycled) {
                     try {
                         val sizeStr = "${screenshot.width}x${screenshot.height}"
@@ -383,6 +439,8 @@ class SmartEngine private constructor(
 
                         if (match != null) {
                             lastMatchTime = System.currentTimeMillis()
+                            lastIdleWarnTime = lastMatchTime
+                            matchCount++
 
                             val scaleX = if (screenshot.width > 0) realW.toFloat() / screenshot.width else 1f
                             val scaleY = if (screenshot.height > 0) realH.toFloat() / screenshot.height else 1f
@@ -420,26 +478,20 @@ class SmartEngine private constructor(
                                 }
                             }
                         } else {
-                            val elapsed = System.currentTimeMillis() - lastMatchTime
-                            if (elapsed >= idleTimeoutMs) {
+                            // Идёт матч или экран не распознан: режим НЕ останавливается сам,
+                            // только пишет предупреждение раз в idleTimeoutMin минут.
+                            val nowIdle = System.currentTimeMillis()
+                            if (nowIdle - lastMatchTime >= idleTimeoutMs && nowIdle - lastIdleWarnTime >= idleTimeoutMs) {
+                                lastIdleWarnTime = nowIdle
                                 EventLogManager.log(
                                     EventLogManager.TAG_AUTO_CLICKER,
-                                    "SMART: экран не распознан",
-                                    isError = true
+                                    "SMART: ${(nowIdle - lastMatchTime) / 60000} мин нет совпадений (идёт матч или экран не распознан), работа продолжается"
                                 )
-                                EventLogManager.log(
-                                    EventLogManager.TAG_AUTO_CLICKER,
-                                    "SMART: остановка, причина: ${effectiveConfig.idleTimeoutMin} минут без совпадений"
-                                )
-                                showUnrecognizedScreenNotification()
-                                resetState()
-                                clearScreensDir()
-                                return
                             }
 
-                            val nextSec = (effectiveConfig.scanIntervalMs / 1000).coerceAtLeast(1)
-                            _nextAction.value = "Повтор через ${nextSec}с"
-                            delay(effectiveConfig.scanIntervalMs)
+                            _nextAction.value = "Следующий снимок через 1с"
+                            val spent = System.currentTimeMillis() - loopStart
+                            delay((effectiveConfig.scanIntervalMs - spent).coerceAtLeast(50L))
                         }
                     } finally {
                         if (!screenshot.isRecycled) {
@@ -448,12 +500,21 @@ class SmartEngine private constructor(
                     }
                 } else {
                     _currentAction.value = "Умный режим: ожидание снимка..."
-                    val nextSec = (effectiveConfig.scanIntervalMs / 1000).coerceAtLeast(1)
-                    _nextAction.value = "Повтор через ${nextSec}с"
-                    delay(effectiveConfig.scanIntervalMs)
+                    _nextAction.value = "Следующий снимок через 1с"
+                    val spentNull = System.currentTimeMillis() - loopStart
+                    delay((effectiveConfig.scanIntervalMs - spentNull).coerceAtLeast(50L))
                 }
 
                 consecutiveErrors = 0
+
+                val nowHb = System.currentTimeMillis()
+                if (nowHb - lastHeartbeatTime >= 60_000L) {
+                    lastHeartbeatTime = nowHb
+                    EventLogManager.log(
+                        EventLogManager.TAG_AUTO_CLICKER,
+                        "SMART: работает. Снимков: $scanCount (неудачных $nullShotCount), совпадений: $matchCount, последнее совпадение ${(nowHb - lastMatchTime) / 1000} с назад"
+                    )
+                }
 
             } catch (c: CancellationException) {
                 throw c
@@ -479,6 +540,7 @@ class SmartEngine private constructor(
                         "SMART: слишком много ошибок подряд",
                         isError = true
                     )
+                    endReason = "10 ошибок подряд"
                     EventLogManager.log(
                         EventLogManager.TAG_AUTO_CLICKER,
                         "SMART: остановка, причина: ошибки"

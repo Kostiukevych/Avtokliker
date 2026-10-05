@@ -88,6 +88,11 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
     private lateinit var btnSmart: Button
     private lateinit var btnMore: Button
 
+    // Кнопки групп запуска «Что запускать»
+    private lateinit var btnRunPoints: NeonGlassButton
+    private lateinit var btnRunSwipes: NeonGlassButton
+    private lateinit var btnRunSmart: NeonGlassButton
+
     // Свёрнутая кнопка
     private lateinit var floatingBadgeButton: NeonGlassButton
 
@@ -430,18 +435,8 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
             val lp = LinearLayout.LayoutParams(0, dpToPx(44), 1f).apply { marginEnd = dpToPx(6) }
             layoutParams = lp
             setOnClickListener {
-                val s = settingsRepo.getLatestSettings()
-                var anyStarted = false
-                if (s.isSwipesEnabled) {
-                    val swipeStarted = swipeController.start()
-                    if (swipeStarted) anyStarted = true
-                }
-                val started = if (s.isSmartMode) {
-                    smartEngine.start()
-                } else {
-                    cycleController.start()
-                }
-                if (started || anyStarted) {
+                val res = com.example.autoclicker.engine.RunCoordinator.start(applicationContext)
+                if (res.anyStarted) {
                     setMode(minimized = true)
                 }
             }
@@ -459,10 +454,7 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
             val lp = LinearLayout.LayoutParams(0, dpToPx(44), 1f).apply { marginStart = dpToPx(6) }
             layoutParams = lp
             setOnClickListener {
-                macroController.stop()
-                swipeController.stop()
-                smartEngine.stop()
-                cycleController.stop()
+                com.example.autoclicker.engine.RunCoordinator.stopAll(applicationContext, "кнопка Стоп")
                 visualOverlay?.cancelAnimations()
             }
         }
@@ -470,6 +462,62 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
         controlRow.addView(startBtn)
         controlRow.addView(stopBtn)
         expandedLayout.addView(controlRow)
+
+        // 3.1. Блок «Что запускать»
+        val runGroupsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, dpToPx(8))
+        }
+
+        btnRunPoints = NeonGlassButton(this).apply {
+            text = "Точки"
+            textSize = 11f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+            cornerDp = 14f
+            val lp = LinearLayout.LayoutParams(0, dpToPx(38), 1f).apply { marginEnd = dpToPx(3) }
+            layoutParams = lp
+            setOnClickListener {
+                val s = settingsRepo.getLatestSettings()
+                settingsRepo.updateRunPoints(!s.runPoints)
+            }
+        }
+
+        btnRunSwipes = NeonGlassButton(this).apply {
+            text = "Свайпы"
+            textSize = 11f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+            cornerDp = 14f
+            val lp = LinearLayout.LayoutParams(0, dpToPx(38), 1f).apply {
+                marginStart = dpToPx(2)
+                marginEnd = dpToPx(2)
+            }
+            layoutParams = lp
+            setOnClickListener {
+                val s = settingsRepo.getLatestSettings()
+                settingsRepo.updateRunSwipes(!s.runSwipes)
+            }
+        }
+
+        btnRunSmart = NeonGlassButton(this).apply {
+            text = "Умный"
+            textSize = 11f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+            cornerDp = 14f
+            val lp = LinearLayout.LayoutParams(0, dpToPx(38), 1f).apply { marginStart = dpToPx(3) }
+            layoutParams = lp
+            setOnClickListener {
+                val s = settingsRepo.getLatestSettings()
+                settingsRepo.updateRunSmart(!s.isSmartMode)
+            }
+        }
+
+        runGroupsRow.addView(btnRunPoints)
+        runGroupsRow.addView(btnRunSwipes)
+        runGroupsRow.addView(btnRunSmart)
+        expandedLayout.addView(runGroupsRow)
 
         // 4. Ряд из трёх стеклянных кнопок: «Точки», «Свайпы», «Умный режим» + кнопка «Ещё»
         val navRow = LinearLayout(this).apply {
@@ -655,6 +703,12 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
                 visualOverlay?.updateSettings(settings)
                 popupWindow.updateSettings(settings)
                 checkOverlapWarning()
+                btnRunPoints.isOn = settings.runPoints
+                btnRunPoints.text = if (settings.runPoints) "✔ Точки" else "Точки"
+                btnRunSwipes.isOn = settings.runSwipes
+                btnRunSwipes.text = if (settings.runSwipes) "✔ Свайпы" else "Свайпы"
+                btnRunSmart.isOn = settings.isSmartMode
+                btnRunSmart.text = if (settings.isSmartMode) "✔ Умный" else "Умный"
             }
         }
     }

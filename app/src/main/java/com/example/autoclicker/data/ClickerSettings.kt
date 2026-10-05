@@ -42,8 +42,19 @@ data class ClickerSettings(
     val recordedMacro: RecordedMacro? = null,
     val macroRepeatCount: Int = 1,
     val macroIntervalSec: Int = 0,
-    val neonBrightness: Int = 85
+    val neonBrightness: Int = 85,
+    val runPoints: Boolean = true,
+    val runSwipes: Boolean = false,
+    val firstCycleAllPoints: Boolean = true
 ) {
+    /** Есть ли хотя бы один включённый и настроенный свайп. */
+    val hasActiveSwipes: Boolean
+        get() = swipes.any { it.enabled && it.isConfigured }
+
+    /** Есть ли хотя бы одна включённая и настроенная точка. */
+    val hasActivePoints: Boolean
+        get() = allPoints.any { it.enabled && it.isConfigured }
+
     val allPoints: List<ClickPoint>
         get() = listOf(point1, point2, point3, point4, point5, point6, point7, point8, point9, point10)
 

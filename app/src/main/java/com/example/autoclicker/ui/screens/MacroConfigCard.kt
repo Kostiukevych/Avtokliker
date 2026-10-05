@@ -12,6 +12,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -190,19 +194,40 @@ fun MacroConfigContent(
                 )
             }
 
+            var showDeleteConfirm by remember { mutableStateOf(false) }
+
             if (hasMacro) {
                 GlassButton(
-                    onClick = onClearMacro,
+                    onClick = { showDeleteConfirm = true },
                     modifier = Modifier
                         .weight(1f)
                         .testTag("clear_macro_btn"),
                     height = 42.dp
                 ) {
                     Text(
-                        text = "Очистить",
+                        text = "Удалить макрос",
                         color = AccentRed,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 12.sp
+                    )
+                }
+            }
+
+            if (showDeleteConfirm) {
+                com.example.autoclicker.ui.theme.GlassDialog(
+                    title = "Вы уверены?",
+                    onDismissRequest = { showDeleteConfirm = false },
+                    onConfirm = {
+                        showDeleteConfirm = false
+                        onClearMacro()
+                    },
+                    confirmText = "Удалить",
+                    cancelText = "Отмена"
+                ) {
+                    Text(
+                        text = "Записанный макрос будет полностью удалён.",
+                        color = Color.White,
+                        fontSize = 14.sp
                     )
                 }
             }

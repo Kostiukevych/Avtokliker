@@ -12,6 +12,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,6 +42,7 @@ fun PointConfigContent(
     onToggleEnabled: (Boolean) -> Unit,
     onCountChange: (Int) -> Unit,
     onIntervalChange: (Int) -> Unit,
+    onResetPoint: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
@@ -149,6 +154,46 @@ fun PointConfigContent(
                 fontSize = 13.sp
             )
         }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        var showResetConfirm by remember { mutableStateOf(false) }
+
+        // Кнопка сброса точки
+        GlassButton(
+            onClick = { showResetConfirm = true },
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("reset_point_${point.id}_btn"),
+            height = 42.dp,
+            hueOffset = -90f
+        ) {
+            Text(
+                text = "Сбросить точку",
+                color = AccentRed,
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp
+            )
+        }
+
+        if (showResetConfirm) {
+            com.example.autoclicker.ui.theme.GlassDialog(
+                title = "Вы уверены?",
+                onDismissRequest = { showResetConfirm = false },
+                onConfirm = {
+                    showResetConfirm = false
+                    onResetPoint()
+                },
+                confirmText = "Сбросить",
+                cancelText = "Отмена"
+            ) {
+                Text(
+                    text = "Сбросить координаты и настройки точки ${point.id}?",
+                    color = Color.White,
+                    fontSize = 14.sp
+                )
+            }
+        }
     }
 }
 
@@ -159,6 +204,7 @@ fun PointConfigCard(
     onToggleEnabled: (Boolean) -> Unit,
     onCountChange: (Int) -> Unit,
     onIntervalChange: (Int) -> Unit,
+    onResetPoint: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     GlassPanel(
@@ -172,7 +218,8 @@ fun PointConfigCard(
             onTestClick = onTestClick,
             onToggleEnabled = onToggleEnabled,
             onCountChange = onCountChange,
-            onIntervalChange = onIntervalChange
+            onIntervalChange = onIntervalChange,
+            onResetPoint = onResetPoint
         )
     }
 }

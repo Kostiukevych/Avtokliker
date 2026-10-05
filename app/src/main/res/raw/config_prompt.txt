@@ -6,7 +6,7 @@
   "version": 1,
   "refWidth": 1340,
   "refHeight": 800,
-  "scanIntervalMs": 2000,
+  "scanIntervalMs": 1000,
   "idleTimeoutMin": 5,
   "rules": [
     {
@@ -16,7 +16,7 @@
       "region": [0.0, 0.65, 0.40, 1.0],
       "threshold": 0.80,
       "tap": { "target": "found" },
-      "afterDelayMs": 3000
+      "afterDelayMs": 1000
     }
   ]
 }

@@ -33,8 +33,10 @@ object EventLogManager {
             Log.d(tag, message)
         }
 
-        val timestamp = timeFormat.format(Date())
+        val now = System.currentTimeMillis()
+        val timestamp = timeFormat.format(Date(now))
         val formattedEntry = "$timestamp [$tag] $message"
+        LogFileManager.append(now, tag, message, isError)
 
         val currentList = _logs.value.toMutableList()
         currentList.add(0, formattedEntry)
@@ -44,7 +46,14 @@ object EventLogManager {
         _logs.value = currentList
     }
 
+    /** Очищает только список в интерфейсе (файлы за 7 суток остаются). */
     fun clear() {
         _logs.value = emptyList()
+    }
+
+    /** Очищает список в интерфейсе И все файлы логов. */
+    fun clearAll() {
+        _logs.value = emptyList()
+        LogFileManager.clearAll()
     }
 }

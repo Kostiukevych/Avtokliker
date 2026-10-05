@@ -137,7 +137,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateSmartMode(enabled: Boolean) {
-        settingsRepo.updateSmartMode(enabled)
+        settingsRepo.updateRunSmart(enabled)
+    }
+
+    fun updateRunPoints(enabled: Boolean) {
+        settingsRepo.updateRunPoints(enabled)
+    }
+
+    fun updateRunSwipes(enabled: Boolean) {
+        settingsRepo.updateRunSwipes(enabled)
+    }
+
+    fun updateRunSmart(enabled: Boolean) {
+        settingsRepo.updateRunSmart(enabled)
+    }
+
+    fun updateFirstCycleAllPoints(enabled: Boolean) {
+        settingsRepo.updateFirstCycleAllPoints(enabled)
     }
 
     fun updateDebugScreenshots(enabled: Boolean) {
@@ -145,22 +161,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startCycle() {
-        val currentSettings = settingsRepo.getLatestSettings()
-        if (currentSettings.isSwipesEnabled) {
-            swipeController.start()
-        }
-        if (currentSettings.isSmartMode) {
-            smartEngine.start()
-        } else {
-            cycleController.start()
-        }
+        com.example.autoclicker.engine.RunCoordinator.start(getApplication())
     }
 
     fun stopCycle() {
+        com.example.autoclicker.engine.RunCoordinator.stopAll(getApplication(), "кнопка Стоп")
         macroController.stop()
-        swipeController.stop()
-        smartEngine.stop()
-        cycleController.stop()
+    }
+
+    fun resetPoint(pointId: Int) {
+        com.example.autoclicker.data.ResetManager.resetPoint(getApplication(), pointId)
+    }
+
+    fun resetAllPoints() {
+        com.example.autoclicker.data.ResetManager.resetAllPoints(getApplication())
+    }
+
+    fun resetSwipe(swipeId: Int) {
+        com.example.autoclicker.data.ResetManager.resetSwipe(getApplication(), swipeId)
+    }
+
+    fun resetAllSwipes() {
+        com.example.autoclicker.data.ResetManager.resetAllSwipes(getApplication())
+    }
+
+    fun resetSmartMode() {
+        com.example.autoclicker.data.ResetManager.resetSmartMode(getApplication())
+    }
+
+    fun resetCycleDelay() {
+        com.example.autoclicker.data.ResetManager.resetCycleDelay(getApplication())
+    }
+
+    fun resetNeonBrightness() {
+        com.example.autoclicker.data.ResetManager.resetNeonBrightness(getApplication())
+    }
+
+    fun resetAll() {
+        com.example.autoclicker.data.ResetManager.resetAll(getApplication())
+    }
+
+    fun deleteAllCustomConfigs() {
+        com.example.autoclicker.data.ResetManager.deleteAllCustomConfigs(getApplication())
     }
 
     fun startMacro() {
@@ -173,15 +215,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearMacro() {
-        settingsRepo.clearMacro()
+        com.example.autoclicker.data.ResetManager.deleteAllMacros(getApplication())
     }
 
     fun updateMacroConfig(repeatCount: Int, intervalSec: Int) {
         settingsRepo.updateMacroConfig(repeatCount, intervalSec)
-    }
-
-    fun updateSwipesMasterEnabled(enabled: Boolean) {
-        settingsRepo.updateSwipesMasterEnabled(enabled)
     }
 
     fun updateSwipeConfig(id: Int, enabled: Boolean, durationMs: Long, intervalSec: Int) {
@@ -197,6 +235,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearLogs() {
-        EventLogManager.clear()
+        EventLogManager.clearAll()
     }
 }

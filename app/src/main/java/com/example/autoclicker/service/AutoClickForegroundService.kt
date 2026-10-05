@@ -18,6 +18,7 @@ import com.example.autoclicker.data.SettingsRepository
 import com.example.autoclicker.engine.CycleController
 import com.example.autoclicker.engine.CycleStatus
 import com.example.autoclicker.engine.GestureExecutor
+import com.example.autoclicker.engine.RunCoordinator
 import com.example.autoclicker.engine.SmartEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -56,32 +57,50 @@ class AutoClickForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        EventLogManager.log(
+            EventLogManager.TAG_AUTO_CLICKER,
+            "SERVICE: onStartCommand " + if (intent == null) "intent=null (перезапуск системой)" else "action=${intent.action}"
+        )
+        if (intent == null) {
+            // Система перезапустила сервис после выгрузки процесса: режимы НЕ возобновляются сами
+            EventLogManager.log(
+                EventLogManager.TAG_AUTO_CLICKER,
+                "SERVICE: сервис перезапущен системой, режимы остановлены, нажмите START",
+                isError = true
+            )
+        }
         when (intent?.action) {
             ACTION_START -> {
-                val settings = settingsRepo.getLatestSettings()
-                if (settings.isSwipesEnabled) {
-                    swipeController.start()
-                }
-                if (settings.isSmartMode) {
-                    smartEngine.start()
-                } else {
-                    cycleController.start()
-                }
+                RunCoordinator.start(applicationContext)
             }
             ACTION_STOP -> {
-                swipeController.stop()
-                smartEngine.stop()
-                cycleController.stop()
+                RunCoordinator.stopAll(applicationContext, "кнопка Стоп (уведомление)")
             }
             ACTION_SHUTDOWN -> {
-                swipeController.stop()
-                smartEngine.stop()
-                cycleController.stop()
+                RunCoordinator.stopAll(applicationContext, "закрытие приложения")
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
         }
         return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        EventLogManager.log(
+            EventLogManager.TAG_AUTO_CLICKER,
+            "SERVICE: приложение убрано из списка недавних (задача удалена)"
+        )
+        super.onTaskRemoved(rootIntent)
+    }
+
+    override fun onLowMemory() {
+        EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "SERVICE: система сообщает о нехватке памяти", isError = true)
+        super.onLowMemory()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "SERVICE: onTrimMemory уровень $level")
+        super.onTrimMemory(level)
     }
 
     private fun observeStatus() {
@@ -205,8 +224,7 @@ class AutoClickForegroundService : Service() {
 
     override fun onDestroy() {
         isRunning = false
-        smartEngine.stop()
-        cycleController.stop()
+        RunCoordinator.stopAll(applicationContext, "служба AutoClickForegroundService уничтожена системой или приложением")
         serviceScope.cancel()
         EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "ForegroundService остановлен")
         super.onDestroy()
