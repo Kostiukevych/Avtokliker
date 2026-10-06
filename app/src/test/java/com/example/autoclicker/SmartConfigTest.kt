@@ -1,11 +1,13 @@
 package com.example.autoclicker
 
 import android.content.Context
+import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import com.example.autoclicker.data.SmartConfig
 import com.example.autoclicker.data.SmartConfigManager
 import com.example.autoclicker.data.SmartConfigMode
 import com.example.autoclicker.data.SmartRule
+import com.example.autoclicker.engine.CustomRuleSearch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -19,6 +21,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import kotlin.math.pow
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -234,5 +237,167 @@ class SmartConfigTest {
 
         // Clean up
         testDir.deleteRecursively()
+    }
+
+    @Test
+    fun testScaleList() {
+        val base = 1.0f
+        val min = 0.5f
+        val max = 2.0f
+        val list = CustomRuleSearch.scaleList(base, min, max, 9)
+        assertEquals(9, list.size)
+        assertEquals(base * min, list.first(), 0.001f)
+        assertEquals(base * max, list.last(), 0.001f)
+
+        // Монотонно растут
+        for (i in 0 until list.size - 1) {
+            assertTrue("Значения должны монотонно расти", list[i] < list[i + 1])
+        }
+
+        // Отношение соседних постоянно
+        val expectedRatio = (max / min).toDouble().pow(1.0 / 8.0)
+        for (i in 0 until list.size - 1) {
+            val actualRatio = (list[i + 1] / list[i]).toDouble()
+            assertEquals(expectedRatio, actualRatio, 0.01)
+        }
+    }
+
+    @Test
+    fun testScaleRangeValidation() {
+        // min < 0.2 отклоняется
+        try {
+            val jsonMin = """
+                {
+                  "name": "InvalidMin",
+                  "rules": [
+                    {
+                      "id": "r1",
+                      "image": { "file": "f.png", "scaleRange": [0.1, 1.0] },
+                      "tap": { "target": "found" }
+                    }
+                  ]
+                }
+            """.trimIndent()
+            SmartConfig.fromJson(jsonMin)
+            org.junit.Assert.fail("0.1 scaleRange min must be rejected")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("scaleRange") == true)
+        }
+
+        // max > 3.0 отклоняется
+        try {
+            val jsonMax = """
+                {
+                  "name": "InvalidMax",
+                  "rules": [
+                    {
+                      "id": "r1",
+                      "image": { "file": "f.png", "scaleRange": [1.0, 3.5] },
+                      "tap": { "target": "found" }
+                    }
+                  ]
+                }
+            """.trimIndent()
+            SmartConfig.fromJson(jsonMax)
+            org.junit.Assert.fail("3.5 scaleRange max must be rejected")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("scaleRange") == true)
+        }
+    }
+
+    private fun createZip(zipFile: File, entries: Map<String, ByteArray>) {
+        ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
+            entries.forEach { (name, bytes) ->
+                zos.putNextEntry(ZipEntry(name))
+                zos.write(bytes)
+                zos.closeEntry()
+            }
+        }
+    }
+
+    @Test
+    fun testImportZipWithDifferentExtensions() {
+        val zipFile = File(context.cacheDir, "test_exts.zip")
+        val json = """
+            {
+              "name": "ExtConfig",
+              "rules": [
+                { "id": "r1", "image": { "file": "test.webp" }, "tap": { "target": "found" } },
+                { "id": "r2", "image": { "file": "test.bmp" }, "tap": { "target": "found" } },
+                { "id": "r3", "image": { "file": "test.gif" }, "tap": { "target": "found" } },
+                { "id": "r4", "image": { "file": "test.heic" }, "tap": { "target": "found" } }
+              ]
+            }
+        """.trimIndent()
+
+        createZip(zipFile, mapOf(
+            "config.json" to json.toByteArray(Charsets.UTF_8),
+            "test.webp" to byteArrayOf(1, 2, 3),
+            "test.bmp" to byteArrayOf(1, 2, 3),
+            "test.gif" to byteArrayOf(1, 2, 3),
+            "test.heic" to byteArrayOf(1, 2, 3)
+        ))
+
+        val result = manager.importZipWithReport(Uri.fromFile(zipFile))
+        assertTrue("Импорт должен быть успешным даже при нечитаемых изображениях", result.isSuccess)
+        val report = result.getOrThrow()
+        assertEquals("ExtConfig", report.configName)
+        assertEquals(4, report.rulesCount)
+        assertTrue("Должны быть проблемы декодирования нечитаемых картинок", report.problems.isNotEmpty())
+
+        zipFile.delete()
+    }
+
+    @Test
+    fun testImportZipSubfolder() {
+        val zipFile = File(context.cacheDir, "test_subfolder.zip")
+        val json = """
+            {
+              "name": "SubfolderConfig",
+              "rules": [
+                { "id": "r1", "image": { "file": "btn.png" }, "tap": { "target": "found" } }
+              ]
+            }
+        """.trimIndent()
+
+        createZip(zipFile, mapOf(
+            "my_pack/config.json" to json.toByteArray(Charsets.UTF_8),
+            "my_pack/btn.png" to byteArrayOf(1, 2, 3)
+        ))
+
+        val result = manager.importZipWithReport(Uri.fromFile(zipFile))
+        assertTrue("Импорт из единственной подпапки должен пройти успешно", result.isSuccess)
+        val report = result.getOrThrow()
+        assertEquals("SubfolderConfig", report.configName)
+        assertEquals(1, report.rulesCount)
+
+        zipFile.delete()
+    }
+
+    @Test
+    fun testImportZipWithTrailingText() {
+        val zipFile = File(context.cacheDir, "test_trailing.zip")
+        val json = """
+            {
+              "name": "TrailingConfig",
+              "rules": [
+                { "id": "r1", "image": { "file": "btn.png" }, "tap": { "target": "found" } }
+              ]
+            }
+            Файлы для zip: btn.png
+        """.trimIndent()
+
+        createZip(zipFile, mapOf(
+            "config.json" to json.toByteArray(Charsets.UTF_8),
+            "btn.png" to byteArrayOf(1, 2, 3)
+        ))
+
+        val result = manager.importZipWithReport(Uri.fromFile(zipFile))
+        assertTrue("Импорт с посторонним текстом должен быть успешен", result.isSuccess)
+        val report = result.getOrThrow()
+        assertEquals("TrailingConfig", report.configName)
+        assertTrue(report.warnings.any { it.contains("посторонний текст") })
+
+        zipFile.delete()
     }
 }

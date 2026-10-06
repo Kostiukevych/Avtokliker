@@ -37,6 +37,23 @@ import kotlin.coroutines.coroutineContext
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
+data class CheckReport(
+    val message: String,
+    val lines: List<String> = emptyList()
+)
+
+class DownsampledRoi(
+    val roiX0: Int,
+    val roiY0: Int,
+    val downW: Int,
+    val downH: Int,
+    val gray: FloatArray,
+    val sumI: DoubleArray,
+    val sumI2: DoubleArray,
+    val intW: Int,
+    val factor: Int = 2
+)
+
 /**
  * Умный режим (Smart Mode) для автоматизации PUBG Mobile:
  * 1. В лобби находит кнопку «НАЧАТЬ» (по цвету, форме и шаблону) и нажимает на неё.
@@ -96,6 +113,7 @@ class SmartEngine private constructor(
     private var scanCount = 0L
     private var nullShotCount = 0L
     private var matchCount = 0L
+    private val consecutiveNoMatchCount = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
     private fun callerInfo(): String {
         return try {
@@ -150,7 +168,8 @@ class SmartEngine private constructor(
         val score: Float,
         val isContinue: Boolean,
         val afterDelayMs: Long = 3000L,
-        val rule: com.example.autoclicker.data.SmartRule? = null
+        val rule: com.example.autoclicker.data.SmartRule? = null,
+        val scale: Float = 0f
     )
 
     data class RuleTemplate(
@@ -170,18 +189,8 @@ class SmartEngine private constructor(
         val debugSummary: String
     )
 
-    private class DownsampledRoi(
-        val roiX0: Int,
-        val roiY0: Int,
-        val downW: Int,
-        val downH: Int,
-        val gray: FloatArray,
-        val sumI: DoubleArray,
-        val sumI2: DoubleArray,
-        val intW: Int
-    )
-
     fun start(): Boolean {
+        CustomRuleSearch.clearCaches()
         if (!AccessibilityServiceHolder.isConnected) {
             EventLogManager.log(
                 EventLogManager.TAG_AUTO_CLICKER,
@@ -303,6 +312,7 @@ class SmartEngine private constructor(
     }
 
     private fun resetState() {
+        consecutiveNoMatchCount.clear()
         _status.value = CycleStatus.STOPPED
         _currentAction.value = "Остановлен"
         _nextAction.value = "Готов к запуску"
@@ -415,11 +425,69 @@ class SmartEngine private constructor(
 
                         // Проверяем шаблоны по правилам
                         if (match == null) {
-                            for (rt in ruleTemplates) {
-                                val found = findMatchInScreenshot(screenshot, rt)
-                                if (found != null) {
-                                    match = found
-                                    break
+                            val customDir = effectiveConfig.rules.firstOrNull { !it.builtin }?.configDir
+                            val preparedCustomRules = CustomRuleSearch.prepareCustomRules(effectiveConfig.rules, customDir)
+
+                            for (rule in effectiveConfig.rules) {
+                                if (rule.builtin) {
+                                    val rt = ruleTemplates.firstOrNull { it.rule.id == rule.id }
+                                    if (rt != null) {
+                                        val eval = evalBuiltinMatch(screenshot, rt)
+                                        if (eval.bestScore >= rule.threshold) {
+                                            consecutiveNoMatchCount[rule.id] = 0
+                                            val isContinue = rule.id.contains("continue", ignoreCase = true)
+                                            match = FoundMatch(
+                                                name = rule.id,
+                                                clickX = eval.clickX,
+                                                clickY = eval.clickY,
+                                                score = eval.bestScore,
+                                                isContinue = isContinue,
+                                                afterDelayMs = rule.afterDelayMs,
+                                                rule = rule,
+                                                scale = eval.bestScale
+                                            )
+                                            break
+                                        } else {
+                                            val misses = (consecutiveNoMatchCount[rule.id] ?: 0) + 1
+                                            consecutiveNoMatchCount[rule.id] = misses
+                                            if (misses % 3 == 0) {
+                                                EventLogManager.log(
+                                                    EventLogManager.TAG_AUTO_CLICKER,
+                                                    "SMART: score ${rule.id}=${String.format(Locale.US, "%.2f", maxOf(0f, eval.bestScore))} масштаб=${String.format(Locale.US, "%.2f", eval.bestScale)}"
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    val eval = CustomRuleSearch.findCustomMatch(screenshot, rule, preparedCustomRules)
+                                    if (eval.score >= rule.threshold) {
+                                        consecutiveNoMatchCount[rule.id] = 0
+                                        val (clickX, clickY) = if (rule.tapTarget == "fixed" && rule.tapX != null && rule.tapY != null) {
+                                            Pair(rule.tapX * screenshot.width, rule.tapY * screenshot.height)
+                                        } else {
+                                            Pair(eval.x, eval.y)
+                                        }
+                                        match = FoundMatch(
+                                            name = rule.id,
+                                            clickX = clickX,
+                                            clickY = clickY,
+                                            score = eval.score,
+                                            isContinue = rule.id.contains("continue", ignoreCase = true),
+                                            afterDelayMs = rule.afterDelayMs,
+                                            rule = rule,
+                                            scale = eval.absoluteScale
+                                        )
+                                        break
+                                    } else {
+                                        val misses = (consecutiveNoMatchCount[rule.id] ?: 0) + 1
+                                        consecutiveNoMatchCount[rule.id] = misses
+                                        if (misses % 3 == 0) {
+                                            EventLogManager.log(
+                                                EventLogManager.TAG_AUTO_CLICKER,
+                                                "SMART: score ${rule.id}=${String.format(Locale.US, "%.2f", maxOf(0f, eval.score))} масштаб=${String.format(Locale.US, "%.2f", eval.absoluteScale)}"
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -446,6 +514,13 @@ class SmartEngine private constructor(
                             val scaleY = if (screenshot.height > 0) realH.toFloat() / screenshot.height else 1f
                             val finalX = match.clickX * scaleX
                             val finalY = match.clickY * scaleY
+
+                            if (match.rule != null && !match.rule.builtin) {
+                                EventLogManager.log(
+                                    EventLogManager.TAG_AUTO_CLICKER,
+                                    "SMART: найдено ${match.rule.id} score=${String.format(Locale.US, "%.2f", match.score)} масштаб=${String.format(Locale.US, "%.2f", match.scale)}, тап (${finalX.toInt()},${finalY.toInt()})"
+                                )
+                            }
 
                             EventLogManager.log(
                                 EventLogManager.TAG_AUTO_CLICKER,
@@ -575,6 +650,7 @@ class SmartEngine private constructor(
         val scaleMultipliers = floatArrayOf(0.93f, 1.0f, 1.07f)
 
         for (rule in effectiveRules) {
+            if (!rule.builtin) continue
             val bmp = loadRuleBitmap(rule) ?: continue
             val baseScale = H / rule.refHeight
             val variants = mutableListOf<TemplateVariant>()
@@ -713,44 +789,156 @@ class SmartEngine private constructor(
         return null
     }
 
-    private fun findMatchInScreenshot(
+    data class MatchEval(
+        val bestScore: Float,
+        val bestScale: Float,
+        val clickX: Float,
+        val clickY: Float
+    )
+
+    private fun evalBuiltinMatch(
         screenshot: Bitmap,
         ruleTemplate: RuleTemplate
-    ): FoundMatch? {
+    ): MatchEval {
         val rule = ruleTemplate.rule
         val reg = rule.getEffectiveRegion()
-        val roi = createDownsampledRoi(screenshot, reg[0], reg[2], reg[1], reg[3]) ?: return null
+        val roi = createDownsampledRoi(screenshot, reg[0], reg[2], reg[1], reg[3])
+            ?: return MatchEval(-1f, 0f, 0f, 0f)
+
+        val H = minOf(screenshot.width, screenshot.height).toFloat()
+        val baseScale = H / rule.refHeight
 
         var bestScore = -1f
+        var bestScale = 0f
         var bestCoords = Pair(0f, 0f)
 
         for (v in ruleTemplate.variants) {
             val (score, coords) = searchTemplateInRoi(roi, v)
             if (score > bestScore) {
                 bestScore = score
+                bestScale = baseScale * v.scaleMultiplier
                 bestCoords = coords
             }
         }
 
-        if (bestScore >= rule.threshold) {
-            val (clickX, clickY) = if (rule.tapTarget == "fixed" && rule.tapX != null && rule.tapY != null) {
-                Pair(rule.tapX * screenshot.width, rule.tapY * screenshot.height)
-            } else {
-                bestCoords
-            }
+        val (clickX, clickY) = if (rule.tapTarget == "fixed" && rule.tapX != null && rule.tapY != null) {
+            Pair(rule.tapX * screenshot.width, rule.tapY * screenshot.height)
+        } else {
+            bestCoords
+        }
 
+        return MatchEval(bestScore, bestScale, clickX, clickY)
+    }
+
+    private fun findMatchInScreenshot(
+        screenshot: Bitmap,
+        ruleTemplate: RuleTemplate
+    ): FoundMatch? {
+        val rule = ruleTemplate.rule
+        val eval = evalBuiltinMatch(screenshot, ruleTemplate)
+        if (eval.bestScore >= rule.threshold) {
             val isContinue = rule.id.contains("continue", ignoreCase = true)
             return FoundMatch(
                 name = rule.id,
-                clickX = clickX,
-                clickY = clickY,
-                score = bestScore,
+                clickX = eval.clickX,
+                clickY = eval.clickY,
+                score = eval.bestScore,
                 isContinue = isContinue,
                 afterDelayMs = rule.afterDelayMs,
-                rule = rule
+                rule = rule,
+                scale = eval.bestScale
             )
         }
         return null
+    }
+
+    suspend fun checkConfigNow(): CheckReport {
+        val service = AccessibilityServiceHolder.service.value
+        if (service == null || !AccessibilityServiceHolder.isConnected) {
+            return CheckReport(
+                message = "Сервис доступности не подключён",
+                lines = emptyList()
+            )
+        }
+
+        val screenshot = service.takeScreenshotBitmap()
+            ?: return CheckReport(
+                message = "Не удалось сделать снимок",
+                lines = emptyList()
+            )
+
+        try {
+            val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            val realSize = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val bounds = wm.currentWindowMetrics.bounds
+                Pair(bounds.width(), bounds.height())
+            } else {
+                val dm = android.util.DisplayMetrics()
+                @Suppress("DEPRECATION")
+                wm.defaultDisplay.getRealMetrics(dm)
+                Pair(dm.widthPixels, dm.heightPixels)
+            }
+            val realW = realSize.first
+            val realH = realSize.second
+            val scaleX = if (screenshot.width > 0) realW.toFloat() / screenshot.width else 1f
+            val scaleY = if (screenshot.height > 0) realH.toFloat() / screenshot.height else 1f
+
+            val effectiveConfig = com.example.autoclicker.data.SmartConfigManager.getInstance(context).buildEffectiveRules(silent = true)
+            val customDir = effectiveConfig.rules.firstOrNull { !it.builtin }?.configDir
+            val preparedCustomRules = CustomRuleSearch.prepareCustomRules(effectiveConfig.rules, customDir)
+            val builtinTemplates = ensureRuleTemplates(effectiveConfig.rules, screenshot.width, screenshot.height)
+
+            val lines = mutableListOf<String>()
+
+            for (rule in effectiveConfig.rules) {
+                if (rule.builtin) {
+                    val rt = builtinTemplates.firstOrNull { it.rule.id == rule.id }
+                    if (rt != null) {
+                        val eval = evalBuiltinMatch(screenshot, rt)
+                        val scoreStr = String.format(Locale.US, "%.2f", maxOf(0f, eval.bestScore))
+                        val scaleStr = String.format(Locale.US, "%.2f", eval.bestScale)
+                        val threshStr = String.format(Locale.US, "%.2f", rule.threshold)
+                        val outcome = if (eval.bestScore >= rule.threshold) {
+                            val finalX = (eval.clickX * scaleX).toInt()
+                            val finalY = (eval.clickY * scaleY).toInt()
+                            "найдено ($finalX,$finalY)"
+                        } else {
+                            "не найдено"
+                        }
+                        lines.add("${rule.id}: score $scoreStr, масштаб $scaleStr, порог $threshStr → $outcome")
+                    }
+                } else {
+                    val prep = preparedCustomRules.firstOrNull { it.rule.id == rule.id }
+                    prep?.errors?.forEach { err ->
+                        lines.add("Ошибка (${rule.id}): $err")
+                    }
+                    val eval = CustomRuleSearch.findCustomMatch(screenshot, rule, preparedCustomRules)
+                    val scoreStr = String.format(Locale.US, "%.2f", maxOf(0f, eval.score))
+                    val scaleStr = String.format(Locale.US, "%.2f", eval.absoluteScale)
+                    val threshStr = String.format(Locale.US, "%.2f", rule.threshold)
+                    val outcome = if (eval.score >= rule.threshold) {
+                        val (clickX, clickY) = if (rule.tapTarget == "fixed" && rule.tapX != null && rule.tapY != null) {
+                            Pair(rule.tapX * realW, rule.tapY * realH)
+                        } else {
+                            Pair(eval.x * scaleX, eval.y * scaleY)
+                        }
+                        "найдено (${clickX.toInt()},${clickY.toInt()})"
+                    } else {
+                        "не найдено"
+                    }
+                    lines.add("${rule.id}: score $scoreStr, масштаб $scaleStr, порог $threshStr → $outcome")
+                }
+            }
+
+            return CheckReport(
+                message = "Результаты проверки:",
+                lines = lines
+            )
+        } finally {
+            if (!screenshot.isRecycled) {
+                screenshot.recycle()
+            }
+        }
     }
 
     private suspend fun performTapWithHooks(x: Float, y: Float): Boolean {

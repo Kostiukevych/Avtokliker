@@ -13,6 +13,7 @@ import com.example.autoclicker.engine.GestureExecutor
 import com.example.autoclicker.engine.SmartEngine
 import com.example.autoclicker.engine.SwipeController
 import com.example.autoclicker.service.AccessibilityServiceHolder
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -29,6 +30,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val smartEngine = SmartEngine.getInstance(application, gestureExecutor, settingsRepo)
     private val swipeController = SwipeController.getInstance(gestureExecutor, settingsRepo)
     private val macroController = com.example.autoclicker.engine.MacroController.getInstance(gestureExecutor, settingsRepo)
+
+    fun checkConfigNow(onResult: (com.example.autoclicker.engine.CheckReport) -> Unit) {
+        viewModelScope.launch(Dispatchers.Default) {
+            try {
+                kotlinx.coroutines.delay(5000L)
+                val report = smartEngine.checkConfigNow()
+                viewModelScope.launch(Dispatchers.Main) {
+                    onResult(report)
+                }
+            } catch (t: Throwable) {
+                val errReport = com.example.autoclicker.engine.CheckReport(
+                    message = "Ошибка проверки: ${t.message ?: t.toString()}",
+                    lines = emptyList()
+                )
+                viewModelScope.launch(Dispatchers.Main) {
+                    onResult(errReport)
+                }
+            }
+        }
+    }
 
     val settings: StateFlow<ClickerSettings> = settingsRepo.settings
     val logs: StateFlow<List<String>> = EventLogManager.logs
@@ -195,6 +216,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun resetNeonBrightness() {
         com.example.autoclicker.data.ResetManager.resetNeonBrightness(getApplication())
+    }
+
+    fun resetActions() {
+        com.example.autoclicker.data.ResetManager.resetActions(getApplication())
     }
 
     fun resetAll() {

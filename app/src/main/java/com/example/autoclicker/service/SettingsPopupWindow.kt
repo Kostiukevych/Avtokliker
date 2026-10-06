@@ -387,9 +387,16 @@ class SettingsPopupWindow(
                     showConfirmDialog("Вы уверены?", "Сбросить все 10 точек?") {
                         com.example.autoclicker.data.ResetManager.resetAllPoints(context)
                     }
-                }, heightDp = 42, bottomDp = 8
+                }, heightDp = 42, bottomDp = 4
             )
         )
+        container.addView(TextView(context).apply {
+            text = "Выключенные точки не показываются на экране"
+            setTextColor(0xFF90A4AE.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            gravity = Gravity.CENTER
+            setPadding(dp(4), dp(2), dp(4), dp(8))
+        })
     }
 
     // ===== «СВАЙПЫ» =====
@@ -454,6 +461,14 @@ class SettingsPopupWindow(
                 settingsRepo.updateRunSmart(it)
             }
         )
+
+        val descView = TextView(context).apply {
+            text = configManager.describeActive()
+            setTextColor(Color.parseColor("#80D8FF"))
+            textSize = 12f
+            setPadding(dp(8), dp(2), dp(8), dp(6))
+        }
+        container.addView(descView)
 
         container.addView(
             fullButton(
@@ -616,6 +631,14 @@ class SettingsPopupWindow(
                     populateContent(WindowType.MORE)
                 }
             }, 40, 6)
+        )
+        container.addView(
+            fullButton(glassButton(context, "Сбросить точки, свайпы и запись", 42f, 16f, -90f, false, 11f) {
+                showConfirmDialog("Вы уверены?", "Сбросить все точки, свайпы и записанный макрос?") {
+                    com.example.autoclicker.data.ResetManager.resetActions(context)
+                    populateContent(WindowType.MORE)
+                }
+            }.apply { setTextColor(0xFFFF8A80.toInt()) }, 42, 6)
         )
         container.addView(
             fullButton(glassButton(context, "Сбросить ВСЁ", 44f, 18f, -110f, false, 12f) {

@@ -214,6 +214,7 @@ class MacroRecordingOverlayView(
         try {
             windowManager.addView(root, params)
             attached = true
+            activeOverlay = this
             mainHandler.post(timerRunnable)
         } catch (e: Exception) {
             EventLogManager.log(
@@ -228,6 +229,9 @@ class MacroRecordingOverlayView(
     fun dismiss() {
         if (dismissed) return
         dismissed = true
+        if (activeOverlay === this) {
+            activeOverlay = null
+        }
         mainHandler.removeCallbacks(timerRunnable)
 
         root?.let {
@@ -241,5 +245,14 @@ class MacroRecordingOverlayView(
             }
         }
         onDismissed?.invoke()
+    }
+
+    companion object {
+        private var activeOverlay: MacroRecordingOverlayView? = null
+
+        fun dismissActive() {
+            activeOverlay?.dismiss()
+            activeOverlay = null
+        }
     }
 }

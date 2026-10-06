@@ -1,5 +1,6 @@
 package com.example.autoclicker.data
 
+import com.example.autoclicker.data.EventLogManager
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -11,6 +12,37 @@ enum class SmartConfigMode {
     DEFAULT_ONLY, // Только встроенные правила (PUBG)
     CUSTOM_ONLY,  // Только выбранный пользовательский конфиг
     MERGED        // Встроенный + пользовательский (с заменой по id)
+}
+
+/**
+ * Вариант картинки/шаблона внутри правила.
+ */
+data class SmartImage(
+    val file: String? = null,
+    val source: String? = null,
+    val box: FloatArray? = null, // [left, top, right, bottom] в долях 0..1
+    val scaleRange: FloatArray = floatArrayOf(0.6f, 1.6f) // [min, max]
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (javaClass != other?.javaClass) return false
+        other as SmartImage
+        if (file != other.file) return false
+        if (source != other.source) return false
+        if (box != null) {
+            if (other.box == null || !box.contentEquals(other.box)) return false
+        } else if (other.box != null) return false
+        if (!scaleRange.contentEquals(other.scaleRange)) return false
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = file?.hashCode() ?: 0
+        result = 31 * result + (source?.hashCode() ?: 0)
+        result = 31 * result + (box?.contentHashCode() ?: 0)
+        result = 31 * result + scaleRange.contentHashCode()
+        return result
+    }
 }
 
 /**
@@ -30,8 +62,22 @@ data class SmartRule(
     val afterDelayMs: Long = 1000L,
     val refHeight: Int = 800,
     val builtin: Boolean = false,
-    val configDir: File? = null
+    val configDir: File? = null,
+    val images: List<SmartImage> = emptyList(),
+    val refWidth: Int = 1340
 ) {
+    val allImages: List<SmartImage> = when {
+        images.isNotEmpty() -> images
+        imageFile != null || imageSource != null -> listOf(
+            SmartImage(
+                file = imageFile,
+                source = imageSource,
+                box = imageBox
+            )
+        )
+        else -> emptyList()
+    }
+
     /**
      * Возвращает эффективную область поиска:
      * - Если region задан: region;
@@ -42,11 +88,12 @@ data class SmartRule(
         if (region != null && region.size == 4) {
             return region
         }
-        if (imageBox != null && imageBox.size == 4) {
-            val bL = imageBox[0]
-            val bT = imageBox[1]
-            val bR = imageBox[2]
-            val bB = imageBox[3]
+        val firstBox = imageBox ?: allImages.firstOrNull { it.box != null }?.box
+        if (firstBox != null && firstBox.size == 4) {
+            val bL = firstBox[0]
+            val bT = firstBox[1]
+            val bR = firstBox[2]
+            val bB = firstBox[3]
             val w = bR - bL
             val h = bB - bT
             val padX = w * 0.25f
@@ -82,6 +129,8 @@ data class SmartRule(
         if (afterDelayMs != other.afterDelayMs) return false
         if (refHeight != other.refHeight) return false
         if (builtin != other.builtin) return false
+        if (refWidth != other.refWidth) return false
+        if (images != other.images) return false
         return true
     }
 
@@ -99,6 +148,8 @@ data class SmartRule(
         result = 31 * result + afterDelayMs.hashCode()
         result = 31 * result + refHeight
         result = 31 * result + builtin.hashCode()
+        result = 31 * result + refWidth
+        result = 31 * result + images.hashCode()
         return result
     }
 }
@@ -130,6 +181,7 @@ data class SmartConfig(
                     tapTarget = "found",
                     afterDelayMs = 1000L,
                     refHeight = 800,
+                    refWidth = 1340,
                     builtin = true
                 ),
                 SmartRule(
@@ -141,6 +193,7 @@ data class SmartConfig(
                     tapTarget = "found",
                     afterDelayMs = 1000L,
                     refHeight = 800,
+                    refWidth = 1340,
                     builtin = true
                 ),
                 SmartRule(
@@ -152,6 +205,7 @@ data class SmartConfig(
                     tapTarget = "found",
                     afterDelayMs = 1000L,
                     refHeight = 800,
+                    refWidth = 1340,
                     builtin = true
                 )
             )
@@ -168,10 +222,65 @@ data class SmartConfig(
         }
 
         /**
+         * Обрезает посторонний текст после закрывающей фигурной скобки основного объекта JSON.
+         */
+        fun extractRootJsonObject(raw: String): Pair<String, Boolean> {
+            var inString = false
+            var escape = false
+            var depth = 0
+            var startIndex = -1
+            var endIndex = -1
+
+            for (i in raw.indices) {
+                val c = raw[i]
+                if (startIndex == -1) {
+                    if (c == '{') {
+                        startIndex = i
+                        depth = 1
+                    }
+                    continue
+                }
+
+                if (escape) {
+                    escape = false
+                    continue
+                }
+                if (c == '\\' && inString) {
+                    escape = true
+                    continue
+                }
+                if (c == '"') {
+                    inString = !inString
+                    continue
+                }
+                if (!inString) {
+                    if (c == '{') {
+                        depth++
+                    } else if (c == '}') {
+                        depth--
+                        if (depth == 0) {
+                            endIndex = i
+                            break
+                        }
+                    }
+                }
+            }
+
+            if (startIndex != -1 && endIndex != -1) {
+                val json = raw.substring(startIndex, endIndex + 1)
+                val hasTrailingText = raw.substring(endIndex + 1).trim().isNotEmpty()
+                return Pair(json, hasTrailingText)
+            }
+            return Pair(raw, false)
+        }
+
+        /**
          * Парсинг и строгая валидация JSON конфига.
          */
         fun fromJson(jsonStr: String, configDir: File? = null): SmartConfig {
-            val json = JSONObject(jsonStr)
+            val (cleanJson, _) = extractRootJsonObject(jsonStr)
+
+            val json = JSONObject(cleanJson)
             val name = json.optString("name", "").trim()
             if (name.isEmpty()) {
                 throw IllegalArgumentException("Поле 'name' не может быть пустым")
@@ -197,33 +306,66 @@ data class SmartConfig(
                 }
                 val priority = rObj.optInt("priority", i + 1)
 
-                // Проверка image
-                if (!rObj.has("image")) {
-                    throw IllegalArgumentException("Правило '$id': отсутствует блок 'image'")
-                }
-                val imgObj = rObj.getJSONObject("image")
-                val imgFile = if (imgObj.has("file")) imgObj.getString("file").trim() else null
-                val imgSrc = if (imgObj.has("source")) imgObj.getString("source").trim() else null
+                fun parseImageObj(imgObj: JSONObject): SmartImage {
+                    val imgFile = if (imgObj.has("file")) imgObj.getString("file").trim() else null
+                    val imgSrc = if (imgObj.has("source")) imgObj.getString("source").trim() else null
 
-                var boxArray: FloatArray? = null
-                if (imgObj.has("box")) {
-                    val bArr = imgObj.getJSONArray("box")
-                    if (bArr.length() != 4) {
-                        throw IllegalArgumentException("Правило '$id': image.box должен содержать 4 координаты")
+                    var boxArray: FloatArray? = null
+                    if (imgObj.has("box")) {
+                        val bArr = imgObj.getJSONArray("box")
+                        if (bArr.length() != 4) {
+                            throw IllegalArgumentException("Правило '$id': box должен содержать 4 координаты")
+                        }
+                        val l = bArr.getDouble(0).toFloat()
+                        val t = bArr.getDouble(1).toFloat()
+                        val r = bArr.getDouble(2).toFloat()
+                        val b = bArr.getDouble(3).toFloat()
+                        validateFractions("Правило '$id': box", l, t, r, b)
+                        if (l >= r || t >= b) {
+                            throw IllegalArgumentException("Правило '$id': box некорректен (левый < правый, верхний < нижний)")
+                        }
+                        boxArray = floatArrayOf(l, t, r, b)
                     }
-                    val l = bArr.getDouble(0).toFloat()
-                    val t = bArr.getDouble(1).toFloat()
-                    val r = bArr.getDouble(2).toFloat()
-                    val b = bArr.getDouble(3).toFloat()
-                    validateFractions("Правило '$id': image.box", l, t, r, b)
-                    if (l >= r || t >= b) {
-                        throw IllegalArgumentException("Правило '$id': image.box некорректен (левый < правый, верхний < нижний)")
+
+                    if (imgFile.isNullOrEmpty() && (imgSrc.isNullOrEmpty() || boxArray == null)) {
+                        throw IllegalArgumentException("Правило '$id': в image должно быть указано либо 'file', либо 'source' с 'box'")
                     }
-                    boxArray = floatArrayOf(l, t, r, b)
+
+                    var scaleRange = floatArrayOf(0.6f, 1.6f)
+                    if (imgObj.has("scaleRange")) {
+                        val sr = imgObj.getJSONArray("scaleRange")
+                        if (sr.length() != 2) {
+                            throw IllegalArgumentException("Правило '$id': scaleRange должен содержать 2 значения [min, max]")
+                        }
+                        val sMin = sr.getDouble(0).toFloat()
+                        val sMax = sr.getDouble(1).toFloat()
+                        if (sMin < 0.2f || sMin >= sMax || sMax > 3.0f) {
+                            throw IllegalArgumentException("Правило '$id': scaleRange должен удовлетворять 0.2 <= min < max <= 3.0 (получено [$sMin, $sMax])")
+                        }
+                        scaleRange = floatArrayOf(sMin, sMax)
+                    }
+
+                    return SmartImage(
+                        file = imgFile,
+                        source = imgSrc,
+                        box = boxArray,
+                        scaleRange = scaleRange
+                    )
                 }
 
-                if (imgFile.isNullOrEmpty() && (imgSrc.isNullOrEmpty() || boxArray == null)) {
-                    throw IllegalArgumentException("Правило '$id': в image должно быть указано либо 'file', либо 'source' с 'box'")
+                val parsedImages = mutableListOf<SmartImage>()
+                if (rObj.has("images")) {
+                    val arr = rObj.getJSONArray("images")
+                    if (arr.length() == 0) {
+                        throw IllegalArgumentException("Правило '$id': массив 'images' не должен быть пустым")
+                    }
+                    for (j in 0 until arr.length()) {
+                        parsedImages.add(parseImageObj(arr.getJSONObject(j)))
+                    }
+                } else if (rObj.has("image")) {
+                    parsedImages.add(parseImageObj(rObj.getJSONObject("image")))
+                } else {
+                    throw IllegalArgumentException("Правило '$id': отсутствует блок 'image' или 'images'")
                 }
 
                 // Проверка region (если задан)
@@ -269,14 +411,15 @@ data class SmartConfig(
                 }
 
                 val afterDelayMs = rObj.optLong("afterDelayMs", 1000L).coerceAtLeast(100L)
+                val primaryImg = parsedImages.first()
 
                 rulesList.add(
                     SmartRule(
                         id = id,
                         priority = priority,
-                        imageFile = imgFile,
-                        imageSource = imgSrc,
-                        imageBox = boxArray,
+                        imageFile = primaryImg.file,
+                        imageSource = primaryImg.source,
+                        imageBox = primaryImg.box,
                         region = regionArray,
                         threshold = threshold,
                         tapTarget = target,
@@ -285,7 +428,9 @@ data class SmartConfig(
                         afterDelayMs = afterDelayMs,
                         refHeight = refHeight,
                         builtin = false,
-                        configDir = configDir
+                        configDir = configDir,
+                        images = parsedImages,
+                        refWidth = refWidth
                     )
                 )
             }

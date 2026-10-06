@@ -2,6 +2,8 @@ package com.example.autoclicker.data
 
 import android.content.Context
 import com.example.autoclicker.engine.RunCoordinator
+import com.example.autoclicker.service.CalibrationOverlayView
+import com.example.autoclicker.service.MacroRecordingOverlayView
 
 /**
  * Сбросы настроек. Перед любым сбросом останавливаются все работающие режимы.
@@ -13,32 +15,50 @@ object ResetManager {
 
     fun resetPoint(context: Context, pointId: Int) {
         RunCoordinator.stopAll(context, "сброс точки $pointId")
+        CalibrationOverlayView.dismissActive()
         repo(context).resetPoint(pointId)
         EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "RESET: точка $pointId сброшена")
     }
 
     fun resetAllPoints(context: Context) {
         RunCoordinator.stopAll(context, "сброс всех точек")
+        CalibrationOverlayView.dismissActive()
         repo(context).resetAllPoints()
         EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "RESET: все точки сброшены")
     }
 
     fun resetSwipe(context: Context, swipeId: Int) {
         RunCoordinator.stopAll(context, "сброс свайпа $swipeId")
+        CalibrationOverlayView.dismissActive()
         repo(context).resetSwipe(swipeId)
         EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "RESET: свайп $swipeId сброшен")
     }
 
     fun resetAllSwipes(context: Context) {
         RunCoordinator.stopAll(context, "сброс всех свайпов")
+        CalibrationOverlayView.dismissActive()
         repo(context).resetAllSwipes()
         EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "RESET: все свайпы сброшены")
     }
 
     fun deleteAllMacros(context: Context) {
         RunCoordinator.stopAll(context, "удаление макросов")
+        MacroRecordingOverlayView.dismissActive()
         repo(context).clearMacro()
         EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "RESET: макрос удалён")
+    }
+
+    /** Сброс действий: точки, свайпы, макрос и группы запуска без затрагивания умного режима, таймера и неона. */
+    fun resetActions(context: Context) {
+        RunCoordinator.stopAll(context, "сброс точек, свайпов и записи")
+        MacroRecordingOverlayView.dismissActive()
+        CalibrationOverlayView.dismissActive()
+        val r = repo(context)
+        r.resetAllPoints()
+        r.resetAllSwipes()
+        r.clearMacro()
+        r.resetRunGroups()
+        EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "RESET: точки, свайпы и запись сброшены")
     }
 
     /** Умный режим: флаги, режим конфигов и выбор активного конфига. Файлы загруженных конфигов остаются. */
@@ -64,6 +84,8 @@ object ResetManager {
     /** Сбросить всё: точки, свайпы, макросы, умный режим, таймер, группы запуска, яркость. Конфиги и логи не удаляются. */
     fun resetAll(context: Context) {
         RunCoordinator.stopAll(context, "сброс всех настроек")
+        MacroRecordingOverlayView.dismissActive()
+        CalibrationOverlayView.dismissActive()
         val r = repo(context)
         r.resetAllPoints()
         r.resetAllSwipes()

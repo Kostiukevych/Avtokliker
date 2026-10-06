@@ -613,25 +613,30 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
     override fun onStartPointCalibration(pointId: Int) {
         rootContainer?.visibility = View.GONE
         popupWindow.dismiss()
-        activeCalibrationView?.dismiss()
+        val old = activeCalibrationView
+        activeCalibrationView = null
+        old?.dismiss()
 
-        val overlay = CalibrationOverlayView(
+        lateinit var overlay: CalibrationOverlayView
+        overlay = CalibrationOverlayView(
             context = this,
             currentPointId = pointId,
             onCoordinateCaptured = { _, _, _ -> },
             onDismissed = {
-                activeCalibrationView = null
-                rootContainer?.visibility = View.VISIBLE
-                val p = overlayParams
-                val w = expandedLayout.width.takeIf { it > 0 } ?: dpToPx(280)
-                val h = expandedLayout.height.takeIf { it > 0 } ?: dpToPx(200)
-                popupWindow.show(
-                    SettingsPopupWindow.WindowType.POINTS,
-                    p?.x ?: 100,
-                    p?.y ?: 100,
-                    w,
-                    h
-                )
+                if (activeCalibrationView === overlay) {
+                    activeCalibrationView = null
+                    rootContainer?.visibility = View.VISIBLE
+                    val p = overlayParams
+                    val w = expandedLayout.width.takeIf { it > 0 } ?: dpToPx(280)
+                    val h = expandedLayout.height.takeIf { it > 0 } ?: dpToPx(200)
+                    popupWindow.show(
+                        SettingsPopupWindow.WindowType.POINTS,
+                        p?.x ?: 100,
+                        p?.y ?: 100,
+                        w,
+                        h
+                    )
+                }
             }
         )
         activeCalibrationView = overlay
@@ -641,10 +646,13 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
     override fun onStartSwipeCalibration(swipeId: Int, isStart: Boolean) {
         rootContainer?.visibility = View.GONE
         popupWindow.dismiss()
-        activeCalibrationView?.dismiss()
+        val old = activeCalibrationView
+        activeCalibrationView = null
+        old?.dismiss()
 
         val pseudoPointId = if (isStart) 10 + (swipeId * 2 - 1) else 10 + (swipeId * 2)
-        val overlay = CalibrationOverlayView(
+        lateinit var overlay: CalibrationOverlayView
+        overlay = CalibrationOverlayView(
             context = this,
             currentPointId = pseudoPointId,
             onCoordinateCaptured = { _, x, y ->
@@ -658,8 +666,8 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
                 }
             },
             onDismissed = {
-                activeCalibrationView = null
-                if (!isStart) {
+                if (activeCalibrationView === overlay) {
+                    activeCalibrationView = null
                     rootContainer?.visibility = View.VISIBLE
                     val p = overlayParams
                     val w = expandedLayout.width.takeIf { it > 0 } ?: dpToPx(280)
@@ -889,6 +897,9 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
         neonAnimator?.cancel()
         popupWindow.dismiss()
         activeCalibrationView?.dismiss()
+        activeCalibrationView = null
+        CalibrationOverlayView.dismissActive()
+        MacroRecordingOverlayView.dismissActive()
         visualOverlay?.detachFromWindow()
         visualOverlay = null
         rootContainer?.let {
@@ -906,6 +917,9 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
         serviceScope.cancel()
         popupWindow.dismiss()
         activeCalibrationView?.dismiss()
+        activeCalibrationView = null
+        CalibrationOverlayView.dismissActive()
+        MacroRecordingOverlayView.dismissActive()
         visualOverlay?.detachFromWindow()
         rootContainer?.let {
             try {

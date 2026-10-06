@@ -257,6 +257,7 @@ class CalibrationOverlayView(
         try {
             windowManager.addView(root, params)
             attached = true
+            activeOverlay = this
         } catch (e: Exception) {
             EventLogManager.log(
                 EventLogManager.TAG_OVERLAY,
@@ -270,6 +271,9 @@ class CalibrationOverlayView(
     fun dismiss() {
         if (dismissed) return
         dismissed = true
+        if (activeOverlay === this) {
+            activeOverlay = null
+        }
         root?.let {
             if (attached) {
                 try {
@@ -284,6 +288,15 @@ class CalibrationOverlayView(
         coordsText = null
         attached = false
         onDismissed?.invoke()
+    }
+
+    companion object {
+        private var activeOverlay: CalibrationOverlayView? = null
+
+        fun dismissActive() {
+            activeOverlay?.dismiss()
+            activeOverlay = null
+        }
     }
 
     private fun roundBg(color: Int, radiusDp: Int): GradientDrawable = GradientDrawable().apply {

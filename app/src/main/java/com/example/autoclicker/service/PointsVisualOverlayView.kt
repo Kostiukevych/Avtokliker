@@ -170,7 +170,7 @@ class PointsVisualOverlayView(context: Context) : View(context) {
         // 1. Рисуем постоянные метки точек (1..10)
         if (showPoints) {
             val settings = currentSettings
-            if (settings != null) {
+            if (settings != null && settings.runPoints) {
                 val pointColors = intArrayOf(
                     Color.parseColor("#00E5FF"), // 1
                     Color.parseColor("#FFAB00"), // 2
@@ -184,8 +184,10 @@ class PointsVisualOverlayView(context: Context) : View(context) {
                     Color.parseColor("#FF5252")  // 10
                 )
                 for (point in settings.allPoints) {
-                    val colorIndex = (point.id - 1).coerceIn(0, pointColors.size - 1)
-                    drawPointMarker(canvas, point, point.id, pointColors[colorIndex])
+                    if (point.enabled && point.isConfigured) {
+                        val colorIndex = (point.id - 1).coerceIn(0, pointColors.size - 1)
+                        drawPointMarker(canvas, point, point.id, pointColors[colorIndex])
+                    }
                 }
             }
         }
@@ -239,7 +241,8 @@ class PointsVisualOverlayView(context: Context) : View(context) {
         pointId: Int,
         activeColor: Int
     ) {
-        if (!point.isConfigured) return
+        val settings = currentSettings ?: return
+        if (!point.isConfigured || !point.enabled || !settings.runPoints) return
 
         val isEnabled = point.enabled
         val markerColor = if (isEnabled) activeColor else Color.parseColor("#78909C")

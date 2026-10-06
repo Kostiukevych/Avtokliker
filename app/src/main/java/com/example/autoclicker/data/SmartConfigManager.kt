@@ -8,8 +8,20 @@ import android.widget.Toast
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
+
+/**
+ * Отчёт об импорте zip архива.
+ */
+data class ImportReport(
+    val configName: String,
+    val rulesCount: Int,
+    val templatesPrepared: Int,
+    val warnings: List<String>,
+    val problems: List<String>
+)
 
 /**
  * Итоговая конфигурация правил для работы SmartEngine.
@@ -100,7 +112,7 @@ class SmartConfigManager private constructor(private val context: Context) {
     /**
      * Построение списка эффективных правил для SmartEngine.
      */
-    fun buildEffectiveRules(): EffectiveConfig {
+    fun buildEffectiveRules(silent: Boolean = false): EffectiveConfig {
         val mode = getMode()
         val activeName = getActiveName()
         val defaultConfig = SmartConfig.createDefaultConfig()
@@ -109,17 +121,19 @@ class SmartConfigManager private constructor(private val context: Context) {
         val isCustomValid = customConfig != null && customConfig.rules.isNotEmpty()
 
         if ((mode == SmartConfigMode.CUSTOM_ONLY || mode == SmartConfigMode.MERGED) && !isCustomValid) {
-            EventLogManager.log(
-                EventLogManager.TAG_AUTO_CLICKER,
-                "SMART: свой конфиг не выбран, работает встроенный",
-                isError = false
-            )
-            mainHandler.post {
-                Toast.makeText(
-                    context,
+            if (!silent) {
+                EventLogManager.log(
+                    EventLogManager.TAG_AUTO_CLICKER,
                     "SMART: свой конфиг не выбран, работает встроенный",
-                    Toast.LENGTH_SHORT
-                ).show()
+                    isError = false
+                )
+                mainHandler.post {
+                    Toast.makeText(
+                        context,
+                        "SMART: свой конфиг не выбран, работает встроенный",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
             }
 
             return EffectiveConfig(
@@ -213,9 +227,23 @@ class SmartConfigManager private constructor(private val context: Context) {
     }
 
     /**
-     * Безопасный импорт zip архива с конфигом.
+     * Описание активного конфига словами для UI.
      */
-    fun importZip(uri: Uri): Result<String> {
+    fun describeActive(): String {
+        val eff = buildEffectiveRules(silent = true)
+        val modeStr = when (eff.mode) {
+            SmartConfigMode.DEFAULT_ONLY -> "Встроенный"
+            SmartConfigMode.CUSTOM_ONLY -> "Только мой"
+            SmartConfigMode.MERGED -> "Встроенный + мой"
+        }
+        val namePart = if (!eff.customConfigName.isNullOrBlank()) " ${eff.customConfigName}" else ""
+        return "$modeStr$namePart, правил ${eff.rules.size} (встроенных ${eff.builtinCount}, своих ${eff.customCount})"
+    }
+
+    /**
+     * Безопасный импорт zip архива с конфигом с возвратом подробного отчёта.
+     */
+    fun importZipWithReport(uri: Uri): Result<ImportReport> {
         var inputStream: InputStream? = null
         var tempExtractDir: File? = null
 
@@ -234,28 +262,42 @@ class SmartConfigManager private constructor(private val context: Context) {
             val maxFiles = 50
             val maxBytes = 20 * 1024 * 1024L // 20 MB
 
-            val allowedExtensions = setOf("json", "png", "jpg", "jpeg")
             val buffer = ByteArray(8192)
 
             ZipInputStream(inputStream).use { zis ->
                 var entry: ZipEntry? = zis.nextEntry
                 while (entry != null) {
-                    fileCount++
-                    if (fileCount > maxFiles) {
-                        return Result.failure(Exception("В архиве слишком много файлов (максимум $maxFiles)"))
+                    val rawName = entry.name.replace('\\', '/')
+                    val segments = rawName.split('/')
+                    val simpleFileName = segments.lastOrNull().orEmpty()
+
+                    // Пропускаем директории или файлы macOS metadata (__MACOSX) и скрытые файлы
+                    if (rawName.contains("__MACOSX") || simpleFileName.startsWith(".")) {
+                        zis.closeEntry()
+                        entry = zis.nextEntry
+                        continue
                     }
 
-                    val entryName = entry.name.replace('\\', '/')
-                    // Пропускаем директории или файлы macOS metadata (__MACOSX)
-                    if (!entry.isDirectory && !entryName.contains("__MACOSX") && !entryName.startsWith(".")) {
-                        val simpleFileName = File(entryName).name
-                        val ext = simpleFileName.substringAfterLast('.', "").lowercase()
-
-                        if (ext !in allowedExtensions) {
-                            return Result.failure(Exception("Архив содержит недопустимый файл '$simpleFileName'. Разрешены только .json, .png, .jpg"))
+                    if (entry.isDirectory) {
+                        val dir = File(tempExtractDir, rawName)
+                        if (!dir.canonicalPath.startsWith(canonicalDestDir)) {
+                            return Result.failure(Exception("Обнаружена угроза безопасности пути (Zip Slip)"))
+                        }
+                        dir.mkdirs()
+                    } else {
+                        fileCount++
+                        if (fileCount > maxFiles) {
+                            return Result.failure(Exception("В архиве слишком много файлов (максимум $maxFiles)"))
                         }
 
-                        val targetFile = File(tempExtractDir, simpleFileName)
+                        val ext = simpleFileName.substringAfterLast('.', "").lowercase(Locale.ROOT)
+                        if (ext !in SmartImageLoader.ALLOWED_EXTENSIONS) {
+                            return Result.failure(
+                                Exception("Архив содержит недопустимый файл '$simpleFileName'. Разрешены: .json, .png, .jpg, .jpeg, .webp, .bmp, .gif, .heic, .heif")
+                            )
+                        }
+
+                        val targetFile = File(tempExtractDir, rawName)
                         val canonicalTarget = targetFile.canonicalPath
 
                         // Защита от Zip Slip
@@ -263,6 +305,7 @@ class SmartConfigManager private constructor(private val context: Context) {
                             return Result.failure(Exception("Обнаружена угроза безопасности пути (Zip Slip)"))
                         }
 
+                        targetFile.parentFile?.mkdirs()
                         FileOutputStream(targetFile).use { fos ->
                             var read: Int
                             while (zis.read(buffer).also { read = it } != -1) {
@@ -279,39 +322,128 @@ class SmartConfigManager private constructor(private val context: Context) {
                 }
             }
 
-            // Проверка наличия config.json
-            val configFile = File(tempExtractDir, "config.json")
-            if (!configFile.exists()) {
-                return Result.failure(Exception("В архиве отсутствует обязательный файл 'config.json'"))
+            // Определение корня конфига: в корне или в единственной подпапке
+            val directConfigFile = File(tempExtractDir, "config.json")
+            val rootDir: File = if (directConfigFile.exists()) {
+                tempExtractDir
+            } else {
+                val topLevelDirs = tempExtractDir.listFiles { f ->
+                    f.isDirectory && !f.name.startsWith(".") && f.name != "__MACOSX"
+                } ?: emptyArray()
+
+                if (topLevelDirs.size == 1 && File(topLevelDirs[0], "config.json").exists()) {
+                    topLevelDirs[0]
+                } else {
+                    return Result.failure(Exception("В архиве отсутствует обязательный файл 'config.json'"))
+                }
             }
 
-            // Валидация JSON и правил
+            val configFile = File(rootDir, "config.json")
             val jsonStr = configFile.readText(Charsets.UTF_8)
+            val warnings = mutableListOf<String>()
+            val problems = mutableListOf<String>()
+
+            val (cleanJson, hasTrailing) = SmartConfig.extractRootJsonObject(jsonStr)
+            if (hasTrailing) {
+                warnings.add("В config.json обнаружен и обрезан посторонний текст после JSON")
+                EventLogManager.log(
+                    EventLogManager.TAG_AUTO_CLICKER,
+                    "SMART: предупреждение: в config.json обнаружен и обрезан посторонний текст после основного объекта JSON"
+                )
+            }
+
             val config = try {
-                SmartConfig.fromJson(jsonStr, tempExtractDir)
+                SmartConfig.fromJson(cleanJson, rootDir)
             } catch (e: Exception) {
                 return Result.failure(Exception("Ошибка в файле config.json: ${e.message}"))
             }
 
-            // Проверка наличия всех упомянутых картинок
+            // Проверка картинок для ВСЕХ элементов rule.allImages во временной папке rootDir ДО изменения destFolder
+            var templatesPrepared = 0
+            var validRulesCount = 0
+
             for (rule in config.rules) {
-                if (!rule.imageFile.isNullOrEmpty()) {
-                    val imgFile = File(tempExtractDir, File(rule.imageFile).name)
-                    if (!imgFile.exists()) {
-                        return Result.failure(Exception("В архиве отсутствует файл изображения '${rule.imageFile}' для правила '${rule.id}'"))
+                var ruleHasUsable = false
+                for (img in rule.allImages) {
+                    val targetFileName = if (!img.file.isNullOrEmpty()) {
+                        File(img.file).name
+                    } else if (!img.source.isNullOrEmpty()) {
+                        File(img.source).name
+                    } else {
+                        null
+                    }
+
+                    if (targetFileName == null) continue
+
+                    val diskFile = SmartImageLoader.resolve(rootDir, targetFileName)
+                    if (diskFile == null || !diskFile.exists()) {
+                        return Result.failure(
+                            Exception("В архиве отсутствует файл изображения '$targetFileName' для правила '${rule.id}'")
+                        )
+                    }
+
+                    val decodeRes = SmartImageLoader.decode(diskFile)
+                    if (decodeRes.isFailure) {
+                        problems.add(decodeRes.exceptionOrNull()?.message ?: "Не удалось прочитать картинку $targetFileName")
+                        continue
+                    }
+
+                    val decoded = decodeRes.getOrNull()
+                    val bmp = decoded?.bitmap
+                    if (bmp == null) {
+                        problems.add("Не удалось прочитать картинку $targetFileName")
+                        continue
+                    }
+
+                    try {
+                        if (img.source != null && img.box != null) {
+                            val cropped = SmartImageLoader.cropByBox(bmp, img.box)
+                            if (cropped == null) {
+                                problems.add("Не удалось вырезать шаблон для правила '${rule.id}' из $targetFileName")
+                            } else {
+                                try {
+                                    if (SmartImageLoader.isFlat(cropped)) {
+                                        problems.add("шаблон ${rule.id} слишком однотонный")
+                                    } else {
+                                        templatesPrepared++
+                                        ruleHasUsable = true
+                                    }
+                                } finally {
+                                    if (cropped !== bmp) {
+                                        cropped.recycle()
+                                    }
+                                }
+                            }
+                        } else {
+                            if (SmartImageLoader.isFlat(bmp)) {
+                                problems.add("шаблон ${rule.id} слишком однотонный")
+                            } else {
+                                templatesPrepared++
+                                ruleHasUsable = true
+                            }
+                        }
+                    } finally {
+                        bmp.recycle()
                     }
                 }
-                if (!rule.imageSource.isNullOrEmpty()) {
-                    val srcFile = File(tempExtractDir, File(rule.imageSource).name)
-                    if (!srcFile.exists()) {
-                        return Result.failure(Exception("В архиве отсутствует файл исходного скриншота '${rule.imageSource}' для правила '${rule.id}'"))
-                    }
+                if (ruleHasUsable) {
+                    validRulesCount++
                 }
             }
 
-            // Перемещение в постоянную папку filesDir/configs/<name>
+            if (validRulesCount == 0) {
+                val problemsSummary = if (problems.isNotEmpty()) ": " + problems.joinToString("; ") else ""
+                return Result.failure(Exception("Ни одно правило не получило пригодной картинки$problemsSummary"))
+            }
+
+            // Проверка лимита профилей (MAX_CONFIGS = 5) до записи в destFolder
             val safeFolderName = config.name.replace(Regex("[^a-zA-Z0-9а-яА-Я._-]"), "_")
             val destFolder = File(configsDir, safeFolderName)
+            if (!destFolder.exists() && listConfigs().size >= MAX_CONFIGS) {
+                return Result.failure(Exception("Достигнут лимит: 5 конфигов. Удалите один из загруженных и повторите"))
+            }
+
+            // Перемещение в постоянную папку filesDir/configs/<name> ПЛОСКО
             if (destFolder.exists()) {
                 destFolder.deleteRecursively()
             }
@@ -319,11 +451,29 @@ class SmartConfigManager private constructor(private val context: Context) {
                 return Result.failure(Exception("Не удалось создать папку для сохранения конфига"))
             }
 
-            tempExtractDir.listFiles()?.forEach { file ->
-                file.copyTo(File(destFolder, file.name), overwrite = true)
+            val copiedNames = mutableSetOf<String>()
+            rootDir.walkTopDown().filter { it.isFile && !it.name.startsWith(".") && it.name != "config.json" }.forEach { sourceFile ->
+                val fileName = sourceFile.name
+                val existingResolved = SmartImageLoader.resolve(destFolder, fileName)
+                if (existingResolved != null) {
+                    warnings.add("Файл '$fileName' уже существует, копия из '${sourceFile.relativeTo(rootDir).path}' пропущена")
+                } else {
+                    copiedNames.add(fileName)
+                    sourceFile.copyTo(File(destFolder, fileName), overwrite = true)
+                }
             }
 
-            return Result.success(safeFolderName)
+            // Записываем очищенный JSON (только основной объект)
+            File(destFolder, "config.json").writeText(cleanJson, Charsets.UTF_8)
+
+            val report = ImportReport(
+                configName = safeFolderName,
+                rulesCount = validRulesCount,
+                templatesPrepared = templatesPrepared,
+                warnings = warnings,
+                problems = problems
+            )
+            return Result.success(report)
 
         } catch (e: Exception) {
             return Result.failure(Exception("Ошибка распаковки архива: ${e.message}"))
@@ -335,7 +485,15 @@ class SmartConfigManager private constructor(private val context: Context) {
         }
     }
 
+    /**
+     * Безопасный импорт zip архива с конфигом (совместимый метод).
+     */
+    fun importZip(uri: Uri): Result<String> {
+        return importZipWithReport(uri).map { it.configName }
+    }
+
     companion object {
+        const val MAX_CONFIGS = 5
         private const val PREFS_NAME = "auto_clicker_prefs"
         private const val KEY_SMART_CONFIG_MODE = "smart_config_mode"
         private const val KEY_ACTIVE_CONFIG = "active_config"

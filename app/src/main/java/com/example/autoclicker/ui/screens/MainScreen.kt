@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -126,6 +127,7 @@ fun MainScreen(
     onResetSmartMode: () -> Unit = {},
     onResetCycleDelay: () -> Unit = {},
     onResetNeonBrightness: () -> Unit = {},
+    onResetActions: () -> Unit = {},
     onResetAll: () -> Unit = {},
     onDeleteAllCustomConfigs: () -> Unit = {},
     onUpdateDebugScreenshots: (Boolean) -> Unit = {},
@@ -140,6 +142,7 @@ fun MainScreen(
     onUpdateMacroConfig: (Int, Int) -> Unit = { _, _ -> },
     onClearLogs: () -> Unit,
     onUpdateNeonBrightness: (Int) -> Unit = {},
+    onCheckConfig: (((com.example.autoclicker.engine.CheckReport) -> Unit) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -163,16 +166,27 @@ fun MainScreen(
     // Состояние конфигов
     var activeConfigName by remember { mutableStateOf(configManager.getActiveName()) }
     var configList by remember { mutableStateOf(configManager.listConfigs()) }
+    var modeState by remember { mutableStateOf(configManager.getMode()) }
     var newlyImportedConfig by remember { mutableStateOf<String?>(null) }
+    var importReport by remember { mutableStateOf<com.example.autoclicker.data.ImportReport?>(null) }
+    var isCheckingConfig by remember { mutableStateOf(false) }
+    var checkReportDialog by remember { mutableStateOf<com.example.autoclicker.engine.CheckReport?>(null) }
+    var showPromptDialog by remember { mutableStateOf(false) }
+    var showGuideDialog by remember { mutableStateOf(false) }
+
+    val activeDescription = remember(activeConfigName, configList, modeState) {
+        configManager.describeActive()
+    }
 
     val zipPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            val result = configManager.importZip(uri)
-            result.onSuccess { configName ->
+            val result = configManager.importZipWithReport(uri)
+            result.onSuccess { report ->
                 configList = configManager.listConfigs()
-                newlyImportedConfig = configName
+                modeState = configManager.getMode()
+                importReport = report
             }.onFailure { err ->
                 Toast.makeText(context, err.message ?: "Ошибка импорта", Toast.LENGTH_LONG).show()
             }
@@ -297,7 +311,7 @@ fun MainScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Активный конфиг: ${if (activeConfigName.isNotBlank()) activeConfigName else "Встроенный (default)"}",
+                        text = "Активный конфиг: $activeDescription",
                         fontSize = 12.sp,
                         color = Color(0xFF80D8FF),
                         fontWeight = FontWeight.SemiBold,
@@ -309,7 +323,11 @@ fun MainScreen(
                             confirmDialogState = Triple(
                                 "Вы уверены?",
                                 "Сбросить флаги и активный конфиг умного режима к исходным?"
-                            ) { onResetSmartMode() }
+                            ) {
+                                onResetSmartMode()
+                                activeConfigName = configManager.getActiveName()
+                                modeState = configManager.getMode()
+                            }
                         },
                         modifier = Modifier.fillMaxWidth().height(42.dp),
                         hueOffset = -90f
@@ -666,6 +684,83 @@ fun MainScreen(
             }
 
             // ===== ДИАЛОГ: КОНФИГ ЗАГРУЖЕН =====
+            // ===== ДИАЛОГ: ИТОГИ ИМПОРТА =====
+            if (importReport != null) {
+                val rep = importReport!!
+                val totalWarn = rep.warnings.size + rep.problems.size
+                GlassDialog(
+                    title = "Итоги импорта",
+                    onDismissRequest = {
+                        newlyImportedConfig = rep.configName
+                        importReport = null
+                    },
+                    onConfirm = {
+                        newlyImportedConfig = rep.configName
+                        importReport = null
+                    },
+                    confirmText = "Далее",
+                    cancelText = "Закрыть"
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Text(
+                            "Загружено правил: ${rep.rulesCount}, шаблонов подготовлено: ${rep.templatesPrepared}, предупреждений: $totalWarn",
+                            color = TextPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (rep.warnings.isNotEmpty() || rep.problems.isNotEmpty()) {
+                            Spacer(Modifier.height(8.dp))
+                            rep.warnings.forEach { w ->
+                                Text("• $w", color = Color(0xFFFFB74D), fontSize = 12.sp, modifier = Modifier.padding(vertical = 2.dp))
+                            }
+                            rep.problems.forEach { p ->
+                                Text("• $p", color = Color(0xFFEF5350), fontSize = 12.sp, modifier = Modifier.padding(vertical = 2.dp))
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ===== ДИАЛОГ: ПРОВЕРКА КОНФИГА =====
+            if (checkReportDialog != null) {
+                val rep = checkReportDialog!!
+                GlassDialog(
+                    title = "Проверка конфига",
+                    onDismissRequest = { checkReportDialog = null },
+                    onConfirm = { checkReportDialog = null },
+                    confirmText = "Закрыть",
+                    cancelText = "Отмена"
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 380.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Text(rep.message, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
+                        if (rep.lines.isEmpty()) {
+                            Text("Нет данных для отображения", color = TextMuted, fontSize = 12.sp)
+                        } else {
+                            rep.lines.forEach { line ->
+                                val color = when {
+                                    line.startsWith("Ошибка") -> Color(0xFFEF5350)
+                                    line.contains("найдено (") -> Color(0xFF69F0AE)
+                                    else -> TextSecondary
+                                }
+                                Text("• $line", color = color, fontSize = 12.sp, modifier = Modifier.padding(vertical = 2.dp))
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ===== ДИАЛОГ: КОНФИГ ЗАГРУЖЕН =====
             if (newlyImportedConfig != null) {
                 val importedName = newlyImportedConfig!!
                 GlassDialog(
@@ -675,6 +770,7 @@ fun MainScreen(
                         configManager.setActiveName(importedName)
                         configManager.setMode(SmartConfigMode.CUSTOM_ONLY)
                         activeConfigName = importedName
+                        modeState = configManager.getMode()
                         newlyImportedConfig = null
                         Toast.makeText(context, "Применён режим «Только мой»", Toast.LENGTH_SHORT).show()
                     },
@@ -692,6 +788,7 @@ fun MainScreen(
                             configManager.setActiveName(importedName)
                             configManager.setMode(SmartConfigMode.MERGED)
                             activeConfigName = importedName
+                            modeState = configManager.getMode()
                             newlyImportedConfig = null
                             Toast.makeText(context, "Применён режим «Встроенный + мой»", Toast.LENGTH_SHORT).show()
                         },
@@ -774,6 +871,33 @@ fun MainScreen(
                         Spacer(Modifier.height(6.dp))
                         GlassButton(
                             onClick = {
+                                if (onCheckConfig != null) {
+                                    isCheckingConfig = true
+                                    onCheckConfig { report ->
+                                        isCheckingConfig = false
+                                        checkReportDialog = report
+                                    }
+                                } else {
+                                    Toast.makeText(context, "Проверка недоступна", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("check_config_btn"),
+                            height = 56.dp,
+                            cornerRadius = 26.dp,
+                            hueOffset = -40f
+                        ) {
+                            Text(
+                                if (isCheckingConfig) "⏳ Проверка…" else "🔍 Проверить конфиг сейчас",
+                                fontSize = 14.sp,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        GlassButton(
+                            onClick = {
                                 zipPickerLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream", "*/*"))
                             },
                             modifier = Modifier
@@ -792,6 +916,7 @@ fun MainScreen(
                                 configManager.setActiveName("")
                                 configManager.setMode(SmartConfigMode.DEFAULT_ONLY)
                                 activeConfigName = ""
+                                modeState = configManager.getMode()
                                 Toast.makeText(context, "Включён встроенный конфиг по умолчанию", Toast.LENGTH_SHORT).show()
                             },
                             modifier = Modifier.fillMaxWidth(),
@@ -836,6 +961,7 @@ fun MainScreen(
                                                     onClick = {
                                                         configManager.setActiveName(cfg)
                                                         activeConfigName = cfg
+                                                        modeState = configManager.getMode()
                                                     },
                                                     modifier = Modifier.width(84.dp),
                                                     height = 38.dp,
@@ -849,6 +975,7 @@ fun MainScreen(
                                                     configManager.delete(cfg)
                                                     configList = configManager.listConfigs()
                                                     activeConfigName = configManager.getActiveName()
+                                                    modeState = configManager.getMode()
                                                 },
                                                 modifier = Modifier.width(44.dp),
                                                 height = 38.dp,
@@ -902,6 +1029,7 @@ fun MainScreen(
                                     onDeleteAllCustomConfigs()
                                     configList = configManager.listConfigs()
                                     activeConfigName = configManager.getActiveName()
+                                    modeState = configManager.getMode()
                                 }
                             },
                             modifier = Modifier.fillMaxWidth().height(44.dp),
@@ -915,8 +1043,27 @@ fun MainScreen(
                             onClick = {
                                 confirmDialogState = Triple(
                                     "Вы уверены?",
+                                    "Сбросить все точки, свайпы и записанный макрос?"
+                                ) { onResetActions() }
+                            },
+                            modifier = Modifier.fillMaxWidth().height(44.dp),
+                            cornerRadius = 22.dp,
+                            hueOffset = -90f
+                        ) {
+                            Text("Сбросить точки, свайпы и запись", color = AccentRed, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        GlassButton(
+                            onClick = {
+                                confirmDialogState = Triple(
+                                    "Вы уверены?",
                                     "Сбросить абсолютно ВСЕ настройки автокликера?"
-                                ) { onResetAll() }
+                                ) {
+                                    onResetAll()
+                                    configList = configManager.listConfigs()
+                                    activeConfigName = configManager.getActiveName()
+                                    modeState = configManager.getMode()
+                                }
                             },
                             modifier = Modifier.fillMaxWidth().height(48.dp),
                             cornerRadius = 24.dp,

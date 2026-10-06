@@ -121,6 +121,9 @@ class MainActivity : ComponentActivity() {
                     onResetNeonBrightness = {
                         viewModel.resetNeonBrightness()
                     },
+                    onResetActions = {
+                        viewModel.resetActions()
+                    },
                     onResetAll = {
                         viewModel.resetAll()
                     },
@@ -144,7 +147,8 @@ class MainActivity : ComponentActivity() {
                     onUpdateMacroConfig = { repeatCount, intervalSec ->
                         viewModel.updateMacroConfig(repeatCount, intervalSec)
                     },
-                    onClearLogs = { viewModel.clearLogs() }
+                    onClearLogs = { viewModel.clearLogs() },
+                    onCheckConfig = { onResult -> viewModel.checkConfigNow(onResult) }
                 )
             }
         }
