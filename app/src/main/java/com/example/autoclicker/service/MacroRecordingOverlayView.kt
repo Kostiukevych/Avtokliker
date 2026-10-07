@@ -227,16 +227,27 @@ class MacroRecordingOverlayView(
     private fun applyFullscreenLayout() {
         val params = windowParams ?: return
         val r = root ?: return
+        val panel = controlPanel
+        // Вернуть отступ плашки внутри полноэкранного окна
+        if (panel != null) {
+            val lp = panel.layoutParams as? FrameLayout.LayoutParams
+            if (lp != null) {
+                lp.topMargin = dp(44)
+                lp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                panel.layoutParams = lp
+            }
+        }
         params.width = WindowManager.LayoutParams.MATCH_PARENT
         params.height = WindowManager.LayoutParams.MATCH_PARENT
         params.x = 0
         params.y = 0
-        params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        params.flags = (WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
         params.gravity = Gravity.TOP or Gravity.START
         try {
             windowManager.updateViewLayout(r, params)
+            r.requestLayout()
         } catch (_: Exception) {
         }
     }
@@ -244,18 +255,42 @@ class MacroRecordingOverlayView(
     private fun applyPanelOnlyLayout() {
         val params = windowParams ?: return
         val r = root ?: return
-        // Только плашка сверху — остальной экран свободен для приложений
-        params.width = WindowManager.LayoutParams.WRAP_CONTENT
-        params.height = WindowManager.LayoutParams.WRAP_CONTENT
+        val panel = controlPanel ?: return
+
+        // Убрать внутренний margin — плашка заполняет маленькое окно
+        val lp = panel.layoutParams as? FrameLayout.LayoutParams
+        if (lp != null) {
+            lp.topMargin = 0
+            lp.gravity = Gravity.CENTER
+            panel.layoutParams = lp
+        }
+
+        // Измерить плашку и задать точный размер окна (WRAP_CONTENT часто даёт 0)
+        panel.measure(
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        )
+        val w = (panel.measuredWidth + dp(12)).coerceAtLeast(dp(160))
+        val h = (panel.measuredHeight + dp(12)).coerceAtLeast(dp(48))
+
+        params.width = w
+        params.height = h
         params.x = 0
         params.y = dp(44)
-        params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        // Без FLAG_NOT_TOUCHABLE — кнопки Пауза/Стоп должны получать касания
+        params.flags = (WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
         params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
         try {
             windowManager.updateViewLayout(r, params)
-        } catch (_: Exception) {
+            r.requestLayout()
+        } catch (e: Exception) {
+            EventLogManager.log(
+                EventLogManager.TAG_OVERLAY,
+                "PAUSE layout error: ${e.message}",
+                isError = true
+            )
         }
     }
 

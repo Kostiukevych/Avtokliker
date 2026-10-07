@@ -115,6 +115,19 @@ class SmartEngine private constructor(
     private var matchCount = 0L
     private val consecutiveNoMatchCount = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
+    /** Кэш координат: после первого нахождения кнопки тапаем сюда без долгого поиска */
+    private data class CachedCoord(
+        val x: Float,
+        val y: Float,
+        val screenW: Int,
+        val screenH: Int,
+        var useCount: Int = 0,
+        var lastMs: Long = System.currentTimeMillis()
+    )
+    private val coordCache = java.util.concurrent.ConcurrentHashMap<String, CachedCoord>()
+    private var lastCacheScreenW = 0
+    private var lastCacheScreenH = 0
+
     private fun callerInfo(): String {
         return try {
             Throwable().stackTrace
@@ -313,6 +326,7 @@ class SmartEngine private constructor(
 
     private fun resetState() {
         consecutiveNoMatchCount.clear()
+        coordCache.clear()
         _status.value = CycleStatus.STOPPED
         _currentAction.value = "Остановлен"
         _nextAction.value = "Готов к запуску"
@@ -341,6 +355,12 @@ class SmartEngine private constructor(
 
     private suspend fun runLoop(effectiveConfig: com.example.autoclicker.data.EffectiveConfig) {
         val (realW, realH) = getRealScreenSize()
+        if (lastCacheScreenW != 0 && (lastCacheScreenW != realW || lastCacheScreenH != realH)) {
+            coordCache.clear()
+            EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "SMART: кэш сброшен (экран ${realW}x${realH})")
+        }
+        lastCacheScreenW = realW
+        lastCacheScreenH = realH
         val ruleTemplates = ensureRuleTemplates(effectiveConfig.rules, realW, realH)
 
         var lastMatchTime = System.currentTimeMillis()
@@ -429,6 +449,53 @@ class SmartEngine private constructor(
                             val preparedCustomRules = CustomRuleSearch.prepareCustomRules(effectiveConfig.rules, customDir)
 
                             for (rule in effectiveConfig.rules) {
+                                // Свайп без картинки: срабатывает каждый скан (например, лента Shorts)
+                                if (!rule.builtin && rule.action == "swipe" && rule.allImages.isEmpty()
+                                    && rule.swipeFromX != null && rule.swipeFromY != null
+                                    && rule.swipeToX != null && rule.swipeToY != null
+                                ) {
+                                    match = FoundMatch(
+                                        name = rule.id,
+                                        clickX = rule.swipeFromX * screenshot.width,
+                                        clickY = rule.swipeFromY * screenshot.height,
+                                        score = 1f,
+                                        isContinue = false,
+                                        afterDelayMs = rule.afterDelayMs,
+                                        rule = rule,
+                                        scale = 1f
+                                    )
+                                    break
+                                }
+
+                                // Быстрый путь: координаты уже запомнены для этого размера экрана
+                                if (!rule.builtin) {
+                                    val cached = coordCache[rule.id]
+                                    if (cached != null && cached.screenW == realW && cached.screenH == realH) {
+                                        cached.useCount++
+                                        // Полный перепоиск каждый 5-й раз, чтобы не «залипнуть»
+                                        if (cached.useCount % 5 != 0) {
+                                            consecutiveNoMatchCount[rule.id] = 0
+                                            val sx = if (realW > 0) screenshot.width.toFloat() / realW else 1f
+                                            val sy = if (realH > 0) screenshot.height.toFloat() / realH else 1f
+                                            match = FoundMatch(
+                                                name = rule.id,
+                                                clickX = cached.x * sx,
+                                                clickY = cached.y * sy,
+                                                score = 0.99f,
+                                                isContinue = rule.id.contains("continue", ignoreCase = true),
+                                                afterDelayMs = rule.afterDelayMs,
+                                                rule = rule,
+                                                scale = 1f
+                                            )
+                                            EventLogManager.log(
+                                                EventLogManager.TAG_AUTO_CLICKER,
+                                                "SMART: кэш ${rule.id} → (${cached.x.toInt()},${cached.y.toInt()})"
+                                            )
+                                            break
+                                        }
+                                    }
+                                }
+
                                 if (rule.builtin) {
                                     val rt = ruleTemplates.firstOrNull { it.rule.id == rule.id }
                                     if (rt != null) {
@@ -515,6 +582,10 @@ class SmartEngine private constructor(
                             val finalX = match.clickX * scaleX
                             val finalY = match.clickY * scaleY
 
+                            // Запоминаем координаты для быстрого тапа на этом размере экрана
+                            val cacheKey = match.rule?.id ?: match.name
+                            coordCache[cacheKey] = CachedCoord(finalX, finalY, realW, realH)
+
                             if (match.rule != null && !match.rule.builtin) {
                                 EventLogManager.log(
                                     EventLogManager.TAG_AUTO_CLICKER,
@@ -527,14 +598,42 @@ class SmartEngine private constructor(
                                 "SMART: Выбрано правило «${match.name}» (score ${(match.score * 100).toInt()}%), клик в (${finalX.toInt()}, ${finalY.toInt()})"
                             )
 
-                            _currentAction.value = "Нажатие «${match.name}»..."
-                            _lastAction.value = "${match.name} (${finalX.toInt()}, ${finalY.toInt()})"
+                            val matchedRule = match.rule
+                            val isSwipe = matchedRule != null && matchedRule.action == "swipe"
+                                && matchedRule.swipeFromX != null && matchedRule.swipeFromY != null
+                                && matchedRule.swipeToX != null && matchedRule.swipeToY != null
 
-                            val tapOk = performTapWithHooks(finalX, finalY)
-                            EventLogManager.log(
-                                EventLogManager.TAG_AUTO_CLICKER,
-                                "SMART: результат dispatchGesture -> ${if (tapOk) "completed (нажатие прошло)" else "cancelled (жест отклонен)"}"
-                            )
+                            if (isSwipe) {
+                                val sx = matchedRule!!.swipeFromX!! * realW
+                                val sy = matchedRule.swipeFromY!! * realH
+                                val ex = matchedRule.swipeToX!! * realW
+                                val ey = matchedRule.swipeToY!! * realH
+                                val dur = matchedRule.swipeDurationMs
+                                _currentAction.value = "Свайп «${match.name}»..."
+                                _lastAction.value = "свайп ${match.name} (${sx.toInt()},${sy.toInt()})→(${ex.toInt()},${ey.toInt()})"
+                                EventLogManager.log(
+                                    EventLogManager.TAG_AUTO_CLICKER,
+                                    "SMART: свайп ${match.name} (${sx.toInt()},${sy.toInt()}) → (${ex.toInt()},${ey.toInt()}) ${dur}мс"
+                                )
+                                val swipeOk = try {
+                                    gestureExecutor.performSwipe(sx, sy, ex, ey, dur)
+                                } catch (t: Throwable) {
+                                    false
+                                }
+                                EventLogManager.log(
+                                    EventLogManager.TAG_AUTO_CLICKER,
+                                    "SMART: результат свайпа -> ${if (swipeOk) "completed" else "cancelled"}"
+                                )
+                            } else {
+                                _currentAction.value = "Нажатие «${match.name}»..."
+                                _lastAction.value = "${match.name} (${finalX.toInt()}, ${finalY.toInt()})"
+
+                                val tapOk = performTapWithHooks(finalX, finalY)
+                                EventLogManager.log(
+                                    EventLogManager.TAG_AUTO_CLICKER,
+                                    "SMART: результат dispatchGesture -> ${if (tapOk) "completed (нажатие прошло)" else "cancelled (жест отклонен)"}"
+                                )
+                            }
 
                             val delayMs = match.afterDelayMs
                             if (delayMs > 0) {

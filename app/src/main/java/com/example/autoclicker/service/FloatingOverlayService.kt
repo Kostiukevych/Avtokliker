@@ -78,6 +78,7 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
     private lateinit var nextActionText: TextView
     private lateinit var timerText: TextView
     private lateinit var lastTapText: TextView
+    private lateinit var clockText: TextView
     private lateinit var overlapWarningText: TextView
     private lateinit var startBtn: NeonGlassButton
     private lateinit var stopBtn: NeonGlassButton
@@ -94,7 +95,7 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
     private lateinit var btnRunSmart: NeonGlassButton
 
     // Свёрнутая кнопка
-    private lateinit var floatingBadgeButton: NeonGlassButton
+    private lateinit var floatingBadgeButton: com.example.autoclicker.ui.views.BlackHoleBadgeView
 
     // Отдельное окно настроек
     private lateinit var popupWindow: SettingsPopupWindow
@@ -214,15 +215,11 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
 
     @SuppressLint("ClickableViewAccessibility")
     private fun createMinimizedBadge() {
-        floatingBadgeButton = NeonGlassButton(this).apply {
-            val sizePx = dpToPx(56)
+        floatingBadgeButton = com.example.autoclicker.ui.views.BlackHoleBadgeView(this).apply {
+            val sizePx = dpToPx(64)
             layoutParams = FrameLayout.LayoutParams(sizePx, sizePx)
-            text = "▶"
-            textSize = 20f
-            setTextColor(Color.parseColor("#00E676"))
-            cornerDp = 999f
-            gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 0)
+            showPlay = true
+            setBackgroundColor(Color.TRANSPARENT)
 
             var initialX = 0
             var initialY = 0
@@ -332,10 +329,19 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
             }
         }
 
+        clockText = TextView(this).apply {
+            text = "--:--"
+            setTextColor(0xFF80D8FF.toInt())
+            textSize = 12f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(dpToPx(6), 0, dpToPx(6), 0)
+        }
         headerLayout.addView(titleText)
+        headerLayout.addView(clockText)
         headerLayout.addView(minimizeBtn)
         headerLayout.addView(closeBtn)
         expandedLayout.addView(headerLayout)
+        startClockTicker()
 
         // Перетаскивание за шапку панели
         var initialX = 0
@@ -705,6 +711,58 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
 
     override fun onDismiss() {}
 
+    private val clockHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var scheduleFired = false
+    private val clockRunnable = object : Runnable {
+        override fun run() {
+            try {
+                if (::clockText.isInitialized) {
+                    val fmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+                    clockText.text = fmt.format(java.util.Date())
+                }
+                checkScheduledStart()
+            } catch (_: Exception) {
+            }
+            clockHandler.postDelayed(this, 1000L)
+        }
+    }
+
+    private fun startClockTicker() {
+        clockHandler.removeCallbacks(clockRunnable)
+        clockHandler.post(clockRunnable)
+    }
+
+    private fun stopClockTicker() {
+        clockHandler.removeCallbacks(clockRunnable)
+    }
+
+    private fun checkScheduledStart() {
+        val s = settingsRepo.getLatestSettings()
+        if (!s.scheduleEnabled || s.scheduleAtEpochMs <= 0L) {
+            scheduleFired = false
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (now < s.scheduleAtEpochMs) return
+        if (scheduleFired) return
+        scheduleFired = true
+        settingsRepo.clearSchedule()
+        EventLogManager.log(
+            EventLogManager.TAG_AUTO_CLICKER,
+            "SCHEDULE: сработало, цель=${s.scheduleTarget}"
+        )
+        android.widget.Toast.makeText(this, "Отложенный запуск", android.widget.Toast.LENGTH_LONG).show()
+        when (s.scheduleTarget) {
+            "macro" -> {
+                macroController.start(s.macroRepeatCount, s.macroIntervalSec)
+            }
+            else -> {
+                com.example.autoclicker.engine.RunCoordinator.start(this)
+            }
+        }
+    }
+
+
     override fun onStartMacroRecording() {
         if (!android.provider.Settings.canDrawOverlays(this)) {
             android.widget.Toast.makeText(this, "Нужно разрешение «Поверх других приложений»", android.widget.Toast.LENGTH_SHORT).show()
@@ -796,7 +854,7 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
                     stopBtn.alpha = 1.0f
                     stopBtn.isOn = true
 
-                    floatingBadgeButton.text = "■"
+                    floatingBadgeButton.showPlay = false
                     floatingBadgeButton.setTextColor(Color.parseColor("#FF5252"))
                 } else {
                     startBtn.text = "START"
@@ -808,7 +866,7 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
                     stopBtn.alpha = 0.5f
                     stopBtn.isOn = false
 
-                    floatingBadgeButton.text = "▶"
+                    floatingBadgeButton.showPlay = true
                     floatingBadgeButton.setTextColor(Color.parseColor("#00E676"))
                 }
             }
@@ -913,12 +971,15 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
         return (dp * resources.displayMetrics.density).toInt()
     }
 
+    private fun dp(dp: Int): Int = dpToPx(dp)
+
     private fun shutdownAllWindowsAndServices() {
         neonAnimator?.cancel()
         popupWindow.dismiss()
         activeCalibrationView?.dismiss()
         activeCalibrationView = null
         CalibrationOverlayView.dismissActive()
+        stopClockTicker()
         MacroRecordingOverlayView.dismissActive()
         visualOverlay?.detachFromWindow()
         visualOverlay = null

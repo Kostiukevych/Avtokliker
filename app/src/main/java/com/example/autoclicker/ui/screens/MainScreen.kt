@@ -73,6 +73,7 @@ import com.example.autoclicker.ui.theme.AccentAmber
 import com.example.autoclicker.ui.theme.AccentGreen
 import com.example.autoclicker.ui.theme.AccentRed
 import com.example.autoclicker.ui.theme.BurgerIcon
+import com.example.autoclicker.ui.components.BlackHoleButton
 import com.example.autoclicker.ui.theme.GlassButton
 import com.example.autoclicker.ui.theme.GlassDialog
 import com.example.autoclicker.ui.theme.GlassLabel
@@ -242,35 +243,41 @@ fun MainScreen(
                         }
                     }
 
-                    // ----- РАЗРЕШЕНИЯ -----
-                    GlassLabel("РАЗРЕШЕНИЯ")
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        GlassButton(
-                            onClick = onOpenOverlaySettings,
-                            modifier = Modifier.weight(1f),
-                            isOn = isOverlayGranted,
-                            height = 76.dp,
-                            cornerRadius = 34.dp
+                    // ----- РАЗРЕШЕНИЯ (исчезают после выдачи) -----
+                    if (!isOverlayGranted || !isAccessibilityConnected) {
+                        GlassLabel("РАЗРЕШЕНИЯ")
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("Поверх экрана", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF4F6FC))
-                                Text("SYSTEM_ALERT", fontSize = 12.sp, color = Color(0xFFC3CADF))
+                            if (!isOverlayGranted) {
+                                GlassButton(
+                                    onClick = onOpenOverlaySettings,
+                                    modifier = Modifier.weight(1f),
+                                    isOn = false,
+                                    height = 76.dp,
+                                    cornerRadius = 34.dp
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("Поверх экрана", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF4F6FC))
+                                        Text("SYSTEM_ALERT", fontSize = 12.sp, color = Color(0xFFC3CADF))
+                                    }
+                                }
                             }
-                        }
-                        GlassButton(
-                            onClick = onOpenAccessibilitySettings,
-                            modifier = Modifier.weight(1f),
-                            isOn = isAccessibilityConnected,
-                            height = 76.dp,
-                            cornerRadius = 34.dp,
-                            hueOffset = 30f
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("Accessibility", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF4F6FC))
-                                Text("для нажатий", fontSize = 12.sp, color = Color(0xFFC3CADF))
+                            if (!isAccessibilityConnected) {
+                                GlassButton(
+                                    onClick = onOpenAccessibilitySettings,
+                                    modifier = Modifier.weight(1f),
+                                    isOn = false,
+                                    height = 76.dp,
+                                    cornerRadius = 34.dp,
+                                    hueOffset = 30f
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("Accessibility", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF4F6FC))
+                                        Text("для нажатий", fontSize = 12.sp, color = Color(0xFFC3CADF))
+                                    }
+                                }
                             }
                         }
                     }
@@ -529,6 +536,47 @@ fun MainScreen(
                             modifier = Modifier.testTag("run_smart_switch")
                         )
                     }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "ПОРЯДОК ЗАПУСКА",
+                        color = TextSecondary,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+                    )
+                    val orderItems = remember(settings.actionOrder) {
+                        settings.actionOrder.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                    }
+                    val orderLabels = mapOf("smart" to "Умный", "points" to "Точки", "swipes" to "Свайпы")
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        orderItems.forEachIndexed { index, key ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = "${index + 1}. ${orderLabels[key] ?: key}",
+                                    color = Color(0xFF80D8FF),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                GlassButton(
+                                    onClick = { settingsRepo.moveActionOrder(key, up = true) },
+                                    modifier = Modifier.width(44.dp),
+                                    height = 36.dp,
+                                    cornerRadius = 12.dp
+                                ) { Text("▲", color = Color.White, fontSize = 12.sp) }
+                                GlassButton(
+                                    onClick = { settingsRepo.moveActionOrder(key, up = false) },
+                                    modifier = Modifier.width(44.dp),
+                                    height = 36.dp,
+                                    cornerRadius = 12.dp
+                                ) { Text("▼", color = Color.White, fontSize = 12.sp) }
+                            }
+                        }
+                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -566,24 +614,28 @@ fun MainScreen(
                         }
                     }
 
-                    if (isOverlayGranted) {
+                    if (isOverlayGranted && isAccessibilityConnected) {
                         Spacer(modifier = Modifier.height(12.dp))
-                        GlassButton(
-                            onClick = onLaunchOverlayService,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("open_floating_window_btn"),
-                            height = 60.dp,
-                            cornerRadius = 28.dp,
-                            hueOffset = 40f
+                        Box(
+                            modifier = Modifier.fillMaxWidth(),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                "Открыть плавающее окно поверх игр",
-                                fontSize = 14.sp,
-                                color = Color(0xFFF4F6FC),
-                                fontWeight = FontWeight.Bold
+                            BlackHoleButton(
+                                onClick = onLaunchOverlayService,
+                                size = 132.dp,
+                                showPlay = cycleStatus == CycleStatus.STOPPED,
+                                modifier = Modifier.testTag("open_floating_window_btn")
                             )
                         }
+                        Text(
+                            text = "Нажмите — открыть плавающее окно",
+                            color = Color(0xFF80D8FF),
+                            fontSize = 12.sp,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
                     }
                 }
 
@@ -683,7 +735,6 @@ fun MainScreen(
                 }
             }
 
-            // ===== ДИАЛОГ: КОНФИГ ЗАГРУЖЕН =====
             // ===== ДИАЛОГ: ИТОГИ ИМПОРТА =====
             if (importReport != null) {
                 val rep = importReport!!

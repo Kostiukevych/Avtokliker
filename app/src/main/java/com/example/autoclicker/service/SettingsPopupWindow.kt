@@ -505,7 +505,7 @@ class SettingsPopupWindow(
         )
 
         val configsCountView = TextView(context).apply {
-            text = "Конфигов: ${'$'}{configManager.listConfigs().size} из 5"
+            text = "Конфигов: ${configManager.listConfigs().size} из 5"
             setTextColor(Color.parseColor("#B0BEC5"))
             textSize = 12f
             setPadding(dp(8), dp(4), dp(8), dp(4))
@@ -641,6 +641,61 @@ class SettingsPopupWindow(
             )
         )
         container.addView(macroCard)
+
+        // Отложенный запуск
+        container.addView(neonLabel(context, "ОТЛОЖЕННЫЙ ЗАПУСК"))
+        val sched = settings
+        val schedInfo = if (sched.scheduleEnabled && sched.scheduleAtEpochMs > 0L) {
+            val fmt = java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.getDefault())
+            "Вкл: ${fmt.format(java.util.Date(sched.scheduleAtEpochMs))} (${sched.scheduleTarget})"
+        } else {
+            "Выкл — старт сразу"
+        }
+        container.addView(TextView(context).apply {
+            text = schedInfo
+            setTextColor(0xFF80D8FF.toInt())
+            textSize = 12f
+            setPadding(dp(8), dp(2), dp(8), dp(6))
+        })
+        container.addView(
+            fullButton(glassButton(context, "Через 1 час", 40f, 16f, 20f, false, 11f) {
+                val at = System.currentTimeMillis() + 60L * 60L * 1000L
+                settingsRepo.updateSchedule(true, at, "all")
+                android.widget.Toast.makeText(context, "Старт через 1 час", android.widget.Toast.LENGTH_SHORT).show()
+                populateContent(WindowType.MORE)
+            }, 40, 4)
+        )
+        container.addView(
+            fullButton(glassButton(context, "Завтра в 09:00", 40f, 16f, 20f, false, 11f) {
+                val cal = java.util.Calendar.getInstance()
+                cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+                cal.set(java.util.Calendar.HOUR_OF_DAY, 9)
+                cal.set(java.util.Calendar.MINUTE, 0)
+                cal.set(java.util.Calendar.SECOND, 0)
+                settingsRepo.updateSchedule(true, cal.timeInMillis, "all")
+                android.widget.Toast.makeText(context, "Старт завтра 09:00", android.widget.Toast.LENGTH_SHORT).show()
+                populateContent(WindowType.MORE)
+            }, 40, 4)
+        )
+        container.addView(
+            fullButton(glassButton(context, "Через 7 дней 09:00", 40f, 16f, 20f, false, 11f) {
+                val cal = java.util.Calendar.getInstance()
+                cal.add(java.util.Calendar.DAY_OF_YEAR, 7)
+                cal.set(java.util.Calendar.HOUR_OF_DAY, 9)
+                cal.set(java.util.Calendar.MINUTE, 0)
+                cal.set(java.util.Calendar.SECOND, 0)
+                settingsRepo.updateSchedule(true, cal.timeInMillis, "all")
+                android.widget.Toast.makeText(context, "Старт через неделю 09:00", android.widget.Toast.LENGTH_SHORT).show()
+                populateContent(WindowType.MORE)
+            }, 40, 4)
+        )
+        container.addView(
+            fullButton(glassButton(context, "Сбросить расписание", 40f, 16f, -90f, false, 11f) {
+                settingsRepo.clearSchedule()
+                android.widget.Toast.makeText(context, "Расписание выключено", android.widget.Toast.LENGTH_SHORT).show()
+                populateContent(WindowType.MORE)
+            }, 40, 8)
+        )
 
         // Сброс всего
         container.addView(neonLabel(context, "СБРОС"))

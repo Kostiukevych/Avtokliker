@@ -12,10 +12,8 @@ import com.example.autoclicker.service.AutoClickForegroundService
 /**
  * Единая точка запуска и остановки всех режимов.
  *
- * START запускает ТОЛЬКО выбранные группы:
- *  - «Умный режим» (settings.isSmartMode) или «Точки» (settings.runPoints), эти два взаимоисключающие,
- *    при включённом умном режиме точки не запускаются;
- *  - «Свайпы» (settings.runSwipes), независимо от остальных.
+ * START запускает выбранные группы в порядке settings.actionOrder
+ * (по умолчанию smart → points → swipes). Группы можно включать вместе.
  * STOP останавливает всё (макрос, свайпы, умный режим, точки).
  */
 object RunCoordinator {
@@ -73,13 +71,19 @@ object RunCoordinator {
         val started = mutableListOf<String>()
         val problems = mutableListOf<String>()
 
-        if (s.isSmartMode) {
-            if (smart.start()) {
-                started.add("Умный режим")
-            } else {
-                problems.add("Умный режим не запущен: проверьте сервис доступности")
-            }
-        } else if (s.runPoints) {
+        // Порядок из настроек (по умолчанию smart → points → swipes)
+        val order = s.actionOrder.split(",")
+            .map { it.trim().lowercase() }
+            .filter { it.isNotEmpty() }
+            .ifEmpty { listOf("smart", "points", "swipes") }
+
+        fun startSmart() {
+            if (!s.isSmartMode) return
+            if (smart.start()) started.add("Умный режим")
+            else problems.add("Умный режим не запущен: проверьте сервис доступности")
+        }
+        fun startPoints() {
+            if (!s.runPoints) return
             if (s.hasActivePoints) {
                 cycle.start()
                 started.add("Точки")
@@ -87,18 +91,32 @@ object RunCoordinator {
                 problems.add("Для группы «Точки» нет включённых настроенных точек")
             }
         }
-
-        if (s.runSwipes) {
+        fun startSwipes() {
+            if (!s.runSwipes) return
             if (s.hasActiveSwipes) {
-                if (swipes.start()) {
-                    started.add("Свайпы")
-                } else {
-                    problems.add("Свайпы не запущены: проверьте сервис доступности")
-                }
+                if (swipes.start()) started.add("Свайпы")
+                else problems.add("Свайпы не запущены: проверьте сервис доступности")
             } else {
                 problems.add("Для группы «Свайпы» нет включённых настроенных свайпов")
             }
         }
+
+        for (step in order) {
+            when (step) {
+                "smart" -> startSmart()
+                "points" -> startPoints()
+                "swipes" -> startSwipes()
+            }
+        }
+        // На случай если в order чего-то не хватает — дозапуск включённых
+        if (s.isSmartMode && "Умный режим" !in started) startSmart()
+        if (s.runPoints && "Точки" !in started) startPoints()
+        if (s.runSwipes && "Свайпы" !in started) startSwipes()
+
+        EventLogManager.log(
+            EventLogManager.TAG_AUTO_CLICKER,
+            "RUN: порядок=${order.joinToString("→")}, запущено: ${started.joinToString(", ").ifEmpty { "—" }}"
+        )
 
         if (started.isEmpty() && problems.isEmpty()) {
             problems.add("Не выбрано, что запускать (Точки, Свайпы или Умный режим)")

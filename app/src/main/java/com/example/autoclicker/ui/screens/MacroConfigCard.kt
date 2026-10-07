@@ -122,9 +122,9 @@ fun MacroConfigContent(
         GlassSlider(
             value = repeatCount.toFloat(),
             onValueChange = { onUpdateConfig(it.toInt(), intervalSec) },
-            valueRange = 1f..15f,
-            steps = 13,
-            formattedValue = "${repeatCount}×",
+            valueRange = 0f..50f,
+            steps = 0,
+            formattedValue = if (repeatCount <= 0) "∞ (бесконечно)" else "${repeatCount}×",
             icon = {
                 Text("🔁", color = Color.White, fontSize = 14.sp)
             }
@@ -143,9 +143,17 @@ fun MacroConfigContent(
         GlassSlider(
             value = intervalSec.toFloat(),
             onValueChange = { onUpdateConfig(repeatCount, it.toInt()) },
-            valueRange = 0f..30f,
-            steps = 29,
-            formattedValue = "${intervalSec} с",
+            valueRange = 0f..300f,
+            steps = 0,
+            formattedValue = run {
+                val s = intervalSec
+                when {
+                    s <= 0 -> "без паузы"
+                    s < 60 -> "$s с"
+                    s % 60 == 0 -> "${s / 60} мин"
+                    else -> "${s / 60} мин ${s % 60} с"
+                }
+            },
             icon = {
                 Text("⏱", color = Color.White, fontSize = 14.sp)
             }

@@ -38,6 +38,10 @@ class MacroController private constructor(
     private val _currentRepeat = MutableStateFlow(0)
     val currentRepeat: StateFlow<Int> = _currentRepeat.asStateFlow()
 
+    /**
+     * @param repeatCount число повторов; 0 = бесконечно (пока не Стоп).
+     * Параметры можно менять в настройках во время работы — подхватятся на следующем круге.
+     */
     fun start(repeatCount: Int = 1, intervalSec: Int = 0): Boolean {
         if (!AccessibilityServiceHolder.isConnected) {
             EventLogManager.log(
@@ -66,9 +70,14 @@ class MacroController private constructor(
                 _currentRepeat.value = 0
                 _currentStatus.value = "Воспроизведение макроса"
 
-                val safeRepeats = repeatCount.coerceAtLeast(1)
+                // Сохраняем стартовые значения в prefs, чтобы слайдеры и цикл были синхронны
+                settingsRepository.updateMacroConfig(
+                    if (repeatCount <= 0) 0 else repeatCount.coerceIn(1, 999),
+                    intervalSec.coerceIn(0, 300)
+                )
+
                 playbackJob = launch {
-                    runMacroLoop(macro, safeRepeats, intervalSec)
+                    runMacroLoop(macro)
                 }
             }
         }
@@ -96,29 +105,33 @@ class MacroController private constructor(
         }
     }
 
-    private suspend fun runMacroLoop(
-        macro: RecordedMacro,
-        totalRepeats: Int,
-        intervalSec: Int
-    ) {
+    private suspend fun runMacroLoop(macro: RecordedMacro) {
+        var repeat = 0
         EventLogManager.log(
             EventLogManager.TAG_CYCLE,
-            "MACRO START: повторов $totalRepeats, интервал ${intervalSec}с, жестов ${macro.strokes.size}"
+            "MACRO START: жестов ${macro.strokes.size} (параметры из настроек, 0 повторов = бесконечно)"
         )
 
-        for (repeat in 1..totalRepeats) {
-            if (!coroutineScope.isActive) break
+        while (coroutineScope.isActive && _isRunning.value) {
+            val cfg = settingsRepository.getLatestSettings()
+            // 0 = бесконечный цикл
+            val totalRepeats = cfg.macroRepeatCount  // 0 = infinite
+            val intervalSec = cfg.macroIntervalSec.coerceIn(0, 300)
+            val infinite = totalRepeats <= 0
 
+            if (!infinite && repeat >= totalRepeats) break
+
+            repeat++
             _currentRepeat.value = repeat
-            _currentStatus.value = if (totalRepeats > 1) {
-                "Повтор $repeat из $totalRepeats"
+            _currentStatus.value = if (infinite) {
+                "Повтор $repeat (∞)"
             } else {
-                "Воспроизведение (${macro.formattedDuration})"
+                "Повтор $repeat из $totalRepeats"
             }
 
             EventLogManager.log(
                 EventLogManager.TAG_CYCLE,
-                "MACRO LOOP: Проход $repeat/$totalRepeats"
+                "MACRO LOOP: Проход $repeat" + if (infinite) " (∞)" else "/$totalRepeats"
             )
 
             val success = gestureExecutor.performMacro(macro) {
@@ -134,16 +147,24 @@ class MacroController private constructor(
                 break
             }
 
-            if (repeat < totalRepeats && coroutineScope.isActive) {
-                val delayMs = maxOf(200L, intervalSec * 1000L)
-                _currentStatus.value = "Пауза между повторами (${delayMs / 1000}с)"
+            // Нужен ли ещё круг?
+            val cfgAfter = settingsRepository.getLatestSettings()
+            val stillInfinite = cfgAfter.macroRepeatCount <= 0
+            val limit = cfgAfter.macroRepeatCount
+            val more = stillInfinite || repeat < limit
+            if (more && coroutineScope.isActive && _isRunning.value) {
+                val waitSec = cfgAfter.macroIntervalSec.coerceIn(0, 300)
+                val delayMs = if (waitSec <= 0) 200L else waitSec * 1000L
+                _currentStatus.value = "Пауза ${delayMs / 1000}с до следующего повтора"
                 delay(delayMs)
+            } else {
+                break
             }
         }
 
         _isRunning.value = false
         _currentStatus.value = "Завершено"
-        EventLogManager.log(EventLogManager.TAG_CYCLE, "MACRO FINISHED: Все повторы выполнены")
+        EventLogManager.log(EventLogManager.TAG_CYCLE, "MACRO FINISHED")
     }
 
     companion object {

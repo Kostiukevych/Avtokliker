@@ -45,7 +45,15 @@ data class ClickerSettings(
     val neonBrightness: Int = 85,
     val runPoints: Boolean = true,
     val runSwipes: Boolean = false,
-    val firstCycleAllPoints: Boolean = true
+    val firstCycleAllPoints: Boolean = true,
+    /** Порядок групп: "smart,points,swipes" (можно менять) */
+    val actionOrder: String = "smart,points,swipes",
+    /** Отложенный старт: если true и scheduleAtEpochMs > now — ждём */
+    val scheduleEnabled: Boolean = false,
+    /** Unix ms момента первого запуска (0 = не задано) */
+    val scheduleAtEpochMs: Long = 0L,
+    /** "all" | "macro" | "points" | "swipes" | "smart" */
+    val scheduleTarget: String = "all"
 ) {
     /** Есть ли хотя бы один включённый и настроенный свайп. */
     val hasActiveSwipes: Boolean

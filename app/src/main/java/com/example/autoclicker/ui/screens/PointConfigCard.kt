@@ -128,9 +128,16 @@ fun PointConfigContent(
         GlassSlider(
             value = point.intervalSec.toFloat(),
             onValueChange = { onIntervalChange(it.toInt()) },
-            valueRange = 1f..30f,
-            steps = 28,
-            formattedValue = "${point.intervalSec} с",
+            valueRange = 1f..300f,
+            steps = 0,
+            formattedValue = run {
+            val s = point.intervalSec
+            when {
+                s < 60 -> "$s с"
+                s % 60 == 0 -> "${s / 60} мин"
+                else -> "${s / 60} мин ${s % 60} с"
+            }
+        },
             icon = {
                 Text("⏱", color = Color.White, fontSize = 14.sp)
             }

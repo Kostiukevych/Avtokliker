@@ -9,7 +9,7 @@ package com.example.autoclicker.data
  * @param y Координата Y в пикселях
  * @param enabled Активна ли точка в цикле
  * @param clickCount Количество повторных нажатий (1..10)
- * @param intervalSec Интервал между повторными нажатиями этой точки в секундах (1..30)
+ * @param intervalSec Интервал между повторными нажатиями этой точки в секундах (1..300)
  */
 data class ClickPoint(
     val id: Int,

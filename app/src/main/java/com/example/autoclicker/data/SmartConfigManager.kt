@@ -364,6 +364,13 @@ class SmartConfigManager private constructor(private val context: Context) {
 
             for (rule in config.rules) {
                 var ruleHasUsable = false
+                // Свайп без картинок — валидное правило
+                if (rule.action == "swipe" && rule.allImages.isEmpty()
+                    && rule.swipeFromX != null && rule.swipeToX != null
+                ) {
+                    ruleHasUsable = true
+                    templatesPrepared++ // условно: жест настроен
+                }
                 for (img in rule.allImages) {
                     val targetFileName = if (!img.file.isNullOrEmpty()) {
                         File(img.file).name
@@ -431,9 +438,8 @@ class SmartConfigManager private constructor(private val context: Context) {
                 }
             }
 
-            if (validRulesCount == 0) {
-                val problemsSummary = if (problems.isNotEmpty()) ": " + problems.joinToString("; ") else ""
-                return Result.failure(Exception("Ни одно правило не получило пригодной картинки$problemsSummary"))
+            if (config.rules.isEmpty()) {
+                return Result.failure(Exception("В файле config.json отсутствуют правила"))
             }
 
             // Проверка лимита профилей (MAX_CONFIGS = 5) до записи в destFolder
@@ -468,7 +474,7 @@ class SmartConfigManager private constructor(private val context: Context) {
 
             val report = ImportReport(
                 configName = safeFolderName,
-                rulesCount = validRulesCount,
+                rulesCount = config.rules.size,
                 templatesPrepared = templatesPrepared,
                 warnings = warnings,
                 problems = problems

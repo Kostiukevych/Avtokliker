@@ -97,6 +97,10 @@ class SettingsRepository private constructor(val context: Context) {
         val runPoints = prefs.getBoolean(KEY_RUN_POINTS, true)
         val runSwipes = prefs.getBoolean(KEY_RUN_SWIPES, false)
         val firstCycleAllPoints = prefs.getBoolean(KEY_FIRST_CYCLE_ALL_POINTS, true)
+        val scheduleEnabled = prefs.getBoolean(KEY_SCHEDULE_ENABLED, false)
+        val scheduleAtEpochMs = prefs.getLong(KEY_SCHEDULE_AT, 0L)
+        val scheduleTarget = prefs.getString(KEY_SCHEDULE_TARGET, "all") ?: "all"
+        val actionOrder = prefs.getString(KEY_ACTION_ORDER, "smart,points,swipes") ?: "smart,points,swipes"
 
         return ClickerSettings(
             point1 = p1,
@@ -125,7 +129,11 @@ class SettingsRepository private constructor(val context: Context) {
             neonBrightness = neonBrightness,
             runPoints = runPoints,
             runSwipes = runSwipes,
-            firstCycleAllPoints = firstCycleAllPoints
+            firstCycleAllPoints = firstCycleAllPoints,
+            scheduleEnabled = scheduleEnabled,
+            scheduleAtEpochMs = scheduleAtEpochMs,
+            scheduleTarget = scheduleTarget,
+            actionOrder = actionOrder
         )
     }
 
@@ -158,7 +166,7 @@ class SettingsRepository private constructor(val context: Context) {
     fun updatePointConfig(pointId: Int, enabled: Boolean, count: Int, interval: Int) {
         val editor = prefs.edit()
         val safeCount = count.coerceIn(1, 10)
-        val safeInterval = interval.coerceIn(1, 30)
+        val safeInterval = interval.coerceIn(1, 300)
         if (pointId in 1..10) {
             editor.putBoolean("point${pointId}_enabled", enabled)
             editor.putInt("point${pointId}_count", safeCount)
@@ -255,10 +263,44 @@ class SettingsRepository private constructor(val context: Context) {
 
     fun updateMacroConfig(repeatCount: Int, intervalSec: Int) {
         prefs.edit()
-            .putInt(KEY_MACRO_REPEAT_COUNT, repeatCount.coerceIn(1, 100))
-            .putInt(KEY_MACRO_INTERVAL_SEC, intervalSec.coerceIn(0, 60))
+            .putInt(KEY_MACRO_REPEAT_COUNT, repeatCount.coerceIn(0, 999)) // 0 = бесконечно
+            .putInt(KEY_MACRO_INTERVAL_SEC, intervalSec.coerceIn(0, 300))
             .apply()
         _settings.value = loadSettings()
+    }
+
+
+    fun updateSchedule(enabled: Boolean, atEpochMs: Long, target: String = "all") {
+        prefs.edit()
+            .putBoolean(KEY_SCHEDULE_ENABLED, enabled)
+            .putLong(KEY_SCHEDULE_AT, if (enabled) atEpochMs else 0L)
+            .putString(KEY_SCHEDULE_TARGET, target)
+            .apply()
+        _settings.value = loadSettings()
+    }
+
+
+    fun updateActionOrder(order: String) {
+        val cleaned = order.split(",").map { it.trim().lowercase() }.filter { it in setOf("smart", "points", "swipes") }
+        val final = if (cleaned.isEmpty()) "smart,points,swipes" else cleaned.distinct().joinToString(",")
+        prefs.edit().putString(KEY_ACTION_ORDER, final).apply()
+        _settings.value = loadSettings()
+    }
+
+    fun moveActionOrder(item: String, up: Boolean) {
+        val list = (getLatestSettings().actionOrder.split(",").map { it.trim() }.filter { it.isNotEmpty() }).toMutableList()
+        val idx = list.indexOf(item)
+        if (idx < 0) return
+        val newIdx = if (up) idx - 1 else idx + 1
+        if (newIdx !in list.indices) return
+        val tmp = list[idx]
+        list[idx] = list[newIdx]
+        list[newIdx] = tmp
+        updateActionOrder(list.joinToString(","))
+    }
+
+    fun clearSchedule() {
+        updateSchedule(false, 0L, "all")
     }
 
     fun updateNeonBrightness(brightness: Int) {
@@ -272,9 +314,7 @@ class SettingsRepository private constructor(val context: Context) {
 
     /** Группа «Точки». Взаимоисключается с умным режимом: включение точек выключает умный режим. */
     fun updateRunPoints(enabled: Boolean) {
-        val editor = prefs.edit().putBoolean(KEY_RUN_POINTS, enabled)
-        if (enabled) editor.putBoolean(KEY_SMART_MODE, false)
-        editor.apply()
+        prefs.edit().putBoolean(KEY_RUN_POINTS, enabled).apply()
         _settings.value = loadSettings()
     }
 
@@ -287,7 +327,7 @@ class SettingsRepository private constructor(val context: Context) {
     /** Группа «Умный режим». Взаимоисключается с точками. */
     fun updateRunSmart(enabled: Boolean) {
         val editor = prefs.edit().putBoolean(KEY_SMART_MODE, enabled)
-        if (enabled) editor.putBoolean(KEY_RUN_POINTS, false)
+        // Больше не выключаем точки — порядок задаётся actionOrder
         editor.apply()
         _settings.value = loadSettings()
     }
@@ -424,6 +464,10 @@ class SettingsRepository private constructor(val context: Context) {
         private const val KEY_RUN_POINTS = "run_points"
         private const val KEY_RUN_SWIPES = "run_swipes"
         private const val KEY_FIRST_CYCLE_ALL_POINTS = "first_cycle_all_points"
+        private const val KEY_SCHEDULE_ENABLED = "schedule_enabled"
+        private const val KEY_SCHEDULE_AT = "schedule_at_epoch_ms"
+        private const val KEY_SCHEDULE_TARGET = "schedule_target"
+        private const val KEY_ACTION_ORDER = "action_order"
 
         private const val KEY_MACRO_JSON = "macro_json"
         private const val KEY_MACRO_REPEAT_COUNT = "macro_repeat_count"
