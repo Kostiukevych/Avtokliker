@@ -3,7 +3,10 @@ package com.example.autoclicker.ui.components
 import android.annotation.SuppressLint
 import android.graphics.Color
 import android.view.ViewGroup
+import android.util.Log
+import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -67,22 +70,19 @@ fun BlackHoleWebButton(
                     }
                 }, "AndroidBridge")
 
+                webChromeClient = object : WebChromeClient() {
+                    override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                        Log.d(
+                            "BlackHoleWebView",
+                            "${consoleMessage?.message()} -- line ${consoleMessage?.lineNumber()} of ${consoleMessage?.sourceId()}"
+                        )
+                        return true
+                    }
+                }
+
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView?, url: String?) {
-                        // На всякий случай дублируем бинд клика
-                        view?.evaluateJavascript(
-                            """
-                            (function(){
-                              var b = document.getElementById('bh');
-                              if (!b || b.__androidBound) return;
-                              b.__androidBound = true;
-                              b.addEventListener('click', function(){
-                                try { AndroidBridge.onBlackHoleClick(); } catch(e) {}
-                              });
-                            })();
-                            """.trimIndent(),
-                            null
-                        )
+                        view?.evaluateJavascript("window.dispatchEvent(new Event('resize'))", null)
                     }
                 }
                 loadUrl("file:///android_asset/black_hole_button.html")

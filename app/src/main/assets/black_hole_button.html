@@ -609,7 +609,7 @@
           sctx.globalAlpha = a * .55; sctx.lineWidth = .8;
           sctx.beginPath();
           sctx.moveTo(x - L, y); sctx.lineTo(x + L, y);
-          sctx.moveTo(x, y - L); sctx.lineTo(x + L, y);
+          sctx.moveTo(x, y - L); sctx.lineTo(x, y + L);
           sctx.stroke();
         }
       }
@@ -747,6 +747,22 @@
     sctx.restore();
   }
 
+  function drawSat(x, y, s, t) {
+    sctx.save();
+    sctx.translate(x, y); sctx.rotate(.4);
+    sctx.fillStyle = '#4a78d8';
+    sctx.fillRect(-s * 2.6, -s * .2, s * 2, s * .4);
+    sctx.fillRect(s * .6, -s * .2, s * 2, s * .4);
+    sctx.fillStyle = '#d8e0ee';
+    sctx.fillRect(-s * .55, -s * .55, s * 1.1, s * 1.1);
+    if ((t * 1.3) % 1 < .22) {
+      sctx.globalCompositeOperation = 'lighter';
+      sctx.fillStyle = 'rgba(255,70,70,.9)';
+      sctx.beginPath(); sctx.arc(0, -s * .9, s * .5, 0, TAU); sctx.fill();
+    }
+    sctx.restore();
+  }
+
   function drawPlanets(t, dt) {
     const A = U * .02;
     planets.forEach((p, i) => {
@@ -857,7 +873,7 @@
     sctx.globalAlpha = f;
     sctx.strokeStyle = '#dff0ff'; sctx.lineWidth = 1.2;
     const L = U * .09 * f;
-    sctx.beginPath(); sctx.moveTo(x - L, y); sctx.lineTo(x + L, y); sctx.moveTo(x, y - L); sctx.lineTo(x + L, y); sctx.stroke();
+    sctx.beginPath(); sctx.moveTo(x - L, y); sctx.lineTo(x + L, y); sctx.moveTo(x, y - L); sctx.lineTo(x, y + L); sctx.stroke();
     sctx.fillStyle = '#fff'; sctx.beginPath(); sctx.arc(x, y, 1.5 + 4 * f, 0, TAU); sctx.fill();
     const rr = U * .26 * (1 - Math.pow(1 - k, 3));            // ударная волна взрыва
     sctx.globalAlpha = .6 * (1 - k);
@@ -1068,6 +1084,8 @@
     const t0 = last;
     let ema = .016, slow = 0;
     const loop = now => {
+      requestAnimationFrame(loop);
+      if (!bg) return;
       const raw = (now - last) / 1000;
       const dt = Math.min(raw, .05);
       last = now;
@@ -1082,11 +1100,14 @@
 
       boost += (boostTarget - boost) * Math.min(1, dt * 4);
       burst *= Math.pow(.02, dt);
-      frameSky(now, dt, (now - t0) / 1000);
-      stepInfall(dt);
-      stepRing(dt);
-      stepOrbit(dt);
-      requestAnimationFrame(loop);
+      try {
+        frameSky(now, dt, (now - t0) / 1000);
+        stepInfall(dt);
+        stepRing(dt);
+        stepOrbit(dt);
+      } catch (e) {
+        console.error(e);
+      }
     };
     requestAnimationFrame(loop);
   }
