@@ -73,7 +73,7 @@ import com.example.autoclicker.ui.theme.AccentAmber
 import com.example.autoclicker.ui.theme.AccentGreen
 import com.example.autoclicker.ui.theme.AccentRed
 import com.example.autoclicker.ui.theme.BurgerIcon
-import com.example.autoclicker.ui.components.BlackHoleButton
+import com.example.autoclicker.ui.components.BlackHoleWebButton
 import com.example.autoclicker.ui.theme.GlassButton
 import com.example.autoclicker.ui.theme.GlassDialog
 import com.example.autoclicker.ui.theme.GlassLabel
@@ -616,19 +616,13 @@ fun MainScreen(
 
                     if (isOverlayGranted && isAccessibilityConnected) {
                         Spacer(modifier = Modifier.height(12.dp))
-                        Box(
-                            modifier = Modifier.fillMaxWidth(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            BlackHoleButton(
-                                onClick = onLaunchOverlayService,
-                                size = 132.dp,
-                                showPlay = cycleStatus == CycleStatus.STOPPED,
-                                modifier = Modifier.testTag("open_floating_window_btn")
-                            )
-                        }
+                        BlackHoleWebButton(
+                            onClick = onLaunchOverlayService,
+                            height = 240.dp,
+                            modifier = Modifier.testTag("open_floating_window_btn")
+                        )
                         Text(
-                            text = "Нажмите — открыть плавающее окно",
+                            text = "Нажмите на чёрную дыру — открыть плавающее окно",
                             color = Color(0xFF80D8FF),
                             fontSize = 12.sp,
                             modifier = Modifier
@@ -735,6 +729,7 @@ fun MainScreen(
                 }
             }
 
+            // ===== ДИАЛОГ: КОНФИГ ЗАГРУЖЕН =====
             // ===== ДИАЛОГ: ИТОГИ ИМПОРТА =====
             if (importReport != null) {
                 val rep = importReport!!
