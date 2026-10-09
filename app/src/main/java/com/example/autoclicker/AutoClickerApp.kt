@@ -2,6 +2,7 @@ package com.example.autoclicker
 
 import android.app.Application
 import com.example.autoclicker.data.LogFileManager
+import com.example.autoclicker.data.SmartLearnedStore
 
 /**
  * Класс приложения: на старте процесса включает файловые логи
@@ -11,5 +12,6 @@ class AutoClickerApp : Application() {
     override fun onCreate() {
         super.onCreate()
         LogFileManager.init(this)
+        SmartLearnedStore.init(this)
     }
 }

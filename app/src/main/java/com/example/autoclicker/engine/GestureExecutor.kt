@@ -24,6 +24,10 @@ class GestureExecutor {
      * @return true если жест успешно выполнен, false при ошибке или отмене
      */
     suspend fun performTap(x: Float, y: Float, duration: Long = 80L): Boolean {
+        val joy = JoystickController.activeOrNull()
+        if (joy != null) {
+            return joy.enqueueTap(x, y)
+        }
         val service = AccessibilityServiceHolder.service.value
         if (service == null) {
             EventLogManager.log(
@@ -132,6 +136,22 @@ class GestureExecutor {
         endX: Float,
         endY: Float,
         durationMs: Long = 300L
+    ): Boolean {
+        val joy = JoystickController.activeOrNull()
+        if (joy != null) {
+            return joy.withPaused {
+                performSwipeInternal(startX, startY, endX, endY, durationMs)
+            }
+        }
+        return performSwipeInternal(startX, startY, endX, endY, durationMs)
+    }
+
+    private suspend fun performSwipeInternal(
+        startX: Float,
+        startY: Float,
+        endX: Float,
+        endY: Float,
+        durationMs: Long
     ): Boolean {
         val service = AccessibilityServiceHolder.service.value
         if (service == null) {

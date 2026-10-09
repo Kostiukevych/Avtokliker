@@ -72,6 +72,11 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- Приёмник будильника отложенного запуска -->
+        <receiver
+            android:name="com.example.autoclicker.service.ScheduleReceiver"
+            android:exported="false" />
+
     </application>
 
 </manifest>

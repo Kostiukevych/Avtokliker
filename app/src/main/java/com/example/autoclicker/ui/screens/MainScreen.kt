@@ -43,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -107,8 +108,10 @@ fun MainScreen(
     cycleNumber: Int,
     isAccessibilityConnected: Boolean,
     isOverlayGranted: Boolean,
+    isAccessibilityEnabledInSystem: Boolean = false,
     onOpenAccessibilitySettings: () -> Unit,
     onOpenOverlaySettings: () -> Unit,
+    onOpenBatterySettings: () -> Unit = {},
     onLaunchOverlayService: () -> Unit,
     onStartCycle: () -> Unit,
     onStopCycle: () -> Unit,
@@ -162,6 +165,7 @@ fun MainScreen(
 
     // Выпадающее меню под бургером
     var isMenuOpen by remember { mutableStateOf(false) }
+    var orderDialogItem by remember { mutableStateOf<String?>(null) }
     var burgerRect by remember { mutableStateOf<Rect?>(null) }
 
     // Состояние конфигов
@@ -244,7 +248,13 @@ fun MainScreen(
                     }
 
                     // ----- РАЗРЕШЕНИЯ (исчезают после выдачи) -----
-                    if (!isOverlayGranted || !isAccessibilityConnected) {
+                    val needBattery: Boolean = remember {
+                        val pm = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+                        val isIgnoring = pm.isIgnoringBatteryOptimizations(context.packageName)
+                        !isIgnoring
+                    }
+                    var showBattery by remember { mutableStateOf(needBattery) }
+                    if (!isOverlayGranted || !isAccessibilityEnabledInSystem || showBattery) {
                         GlassLabel("РАЗРЕШЕНИЯ")
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -264,7 +274,7 @@ fun MainScreen(
                                     }
                                 }
                             }
-                            if (!isAccessibilityConnected) {
+                            if (!isAccessibilityEnabledInSystem) {
                                 GlassButton(
                                     onClick = onOpenAccessibilitySettings,
                                     modifier = Modifier.weight(1f),
@@ -276,6 +286,28 @@ fun MainScreen(
                                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                         Text("Accessibility", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF4F6FC))
                                         Text("для нажатий", fontSize = 12.sp, color = Color(0xFFC3CADF))
+                                    }
+                                }
+                            } else if (!isAccessibilityConnected) {
+                                Text(
+                                    text = "Accessibility включён, подключаюсь…",
+                                    color = Color(0xFF80D8FF),
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.weight(1f).padding(8.dp)
+                                )
+                            }
+                            if (showBattery) {
+                                GlassButton(
+                                    onClick = onOpenBatterySettings,
+                                    modifier = Modifier.weight(1f),
+                                    isOn = false,
+                                    height = 76.dp,
+                                    cornerRadius = 34.dp,
+                                    hueOffset = -20f
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("Работа в фоне", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF4F6FC))
+                                        Text("батарея", fontSize = 12.sp, color = Color(0xFFC3CADF))
                                     }
                                 }
                             }
@@ -514,66 +546,102 @@ fun MainScreen(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // ----- ЧТО ЗАПУСКАТЬ -----
-                    GlassLabel("ЧТО ЗАПУСКАТЬ")
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        GlassSwitch(
-                            text = "Точки",
-                            checked = settings.runPoints,
-                            onCheckedChange = onUpdateRunPoints,
-                            modifier = Modifier.testTag("run_points_switch")
-                        )
-                        GlassSwitch(
-                            text = "Свайпы",
-                            checked = settings.runSwipes,
-                            onCheckedChange = onUpdateRunSwipes,
-                            modifier = Modifier.testTag("run_swipes_switch")
-                        )
-                        GlassSwitch(
-                            text = "Умный режим",
-                            checked = settings.isSmartMode,
-                            onCheckedChange = onUpdateRunSmart,
-                            modifier = Modifier.testTag("run_smart_switch")
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = "ПОРЯДОК ЗАПУСКА",
-                        color = TextSecondary,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
-                    )
+                    // ----- ЗАПУСК И ПОРЯДОК -----
+                    GlassLabel("ЗАПУСК И ПОРЯДОК")
                     val orderItems = remember(settings.actionOrder) {
-                        settings.actionOrder.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                        val base = settings.actionOrder.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                        val all = listOf("smart", "points", "swipes")
+                        (base + all.filter { it !in base }).distinct()
                     }
-                    val orderLabels = mapOf("smart" to "Умный", "points" to "Точки", "swipes" to "Свайпы")
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    val orderLabels = mapOf("smart" to "Умный режим", "points" to "Точки", "swipes" to "Свайпы")
+                    val switchChecked = mapOf(
+                        "smart" to settings.isSmartMode,
+                        "points" to settings.runPoints,
+                        "swipes" to settings.runSwipes
+                    )
+                    val switchChange = mapOf(
+                        "smart" to onUpdateRunSmart,
+                        "points" to onUpdateRunPoints,
+                        "swipes" to onUpdateRunSwipes
+                    )
+                    val switchTags = mapOf(
+                        "smart" to "run_smart_switch",
+                        "points" to "run_points_switch",
+                        "swipes" to "run_swipes_switch"
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         orderItems.forEachIndexed { index, key ->
+                            val enabled = switchChecked[key] == true
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .graphicsLayer { alpha = if (enabled) 1f else 0.85f },
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text(
-                                    text = "${index + 1}. ${orderLabels[key] ?: key}",
-                                    color = Color(0xFF80D8FF),
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier.weight(1f)
+                                GlassSwitch(
+                                    text = orderLabels[key] ?: key,
+                                    checked = enabled,
+                                    onCheckedChange = { switchChange[key]?.invoke(it) },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag(switchTags[key] ?: "")
                                 )
                                 GlassButton(
-                                    onClick = { settingsRepo.moveActionOrder(key, up = true) },
-                                    modifier = Modifier.width(44.dp),
-                                    height = 36.dp,
-                                    cornerRadius = 12.dp
-                                ) { Text("▲", color = Color.White, fontSize = 12.sp) }
-                                GlassButton(
-                                    onClick = { settingsRepo.moveActionOrder(key, up = false) },
-                                    modifier = Modifier.width(44.dp),
-                                    height = 36.dp,
-                                    cornerRadius = 12.dp
-                                ) { Text("▼", color = Color.White, fontSize = 12.sp) }
+                                    onClick = { orderDialogItem = key },
+                                    modifier = Modifier
+                                        .width(52.dp)
+                                        .graphicsLayer { alpha = if (enabled) 1f else 0.5f },
+                                    height = 44.dp,
+                                    cornerRadius = 14.dp
+                                ) {
+                                    Text(
+                                        text = "${index + 1}",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 16.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (orderDialogItem != null) {
+                        val item = orderDialogItem!!
+                        androidx.compose.ui.window.Dialog(onDismissRequest = { orderDialogItem = null }) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(20.dp))
+                                    .background(Color(0xFF12141C))
+                                    .padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    text = "Порядок: ${orderLabels[item] ?: item}",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    listOf(1, 2, 3).forEach { pos ->
+                                        val currentPos = orderItems.indexOf(item) + 1
+                                        GlassButton(
+                                            onClick = {
+                                                settingsRepo.setActionPosition(item, pos)
+                                                orderDialogItem = null
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                            height = 48.dp,
+                                            isOn = currentPos == pos,
+                                            cornerRadius = 14.dp
+                                        ) {
+                                            Text("$pos", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -614,7 +682,7 @@ fun MainScreen(
                         }
                     }
 
-                    if (isOverlayGranted && isAccessibilityConnected) {
+                    if (isOverlayGranted && isAccessibilityEnabledInSystem) {
                         Spacer(modifier = Modifier.height(12.dp))
                         BlackHoleWebButton(
                             onClick = onLaunchOverlayService,

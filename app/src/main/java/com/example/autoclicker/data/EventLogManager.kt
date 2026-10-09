@@ -10,7 +10,7 @@ import java.util.Locale
 
 /**
  * Менеджер логов и событий приложения.
- * Поддерживает вывод в Logcat с заданными тегами и сохраняет последние 30 событий для UI.
+ * Поддерживает вывод в Logcat с заданными тегами и сохраняет последние $MAX_LOG_ENTRIES событий для UI.
  */
 object EventLogManager {
     const val TAG_AUTO_CLICKER = "AUTO_CLICKER"
@@ -19,8 +19,8 @@ object EventLogManager {
     const val TAG_OVERLAY = "OVERLAY"
     const val TAG_ACCESSIBILITY = "ACCESSIBILITY"
 
-    private const val MAX_LOG_ENTRIES = 30
-    private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+    const val MAX_LOG_ENTRIES = 300
+    private val timeFormat = SimpleDateFormat("dd.MM.yyyy HH:mm:ss", Locale.getDefault())
 
     private val _logs = MutableStateFlow<List<String>>(emptyList())
     val logs: StateFlow<List<String>> = _logs.asStateFlow()

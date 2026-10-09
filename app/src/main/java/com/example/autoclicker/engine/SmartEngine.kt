@@ -114,6 +114,11 @@ class SmartEngine private constructor(
     private var nullShotCount = 0L
     private var matchCount = 0L
     private val consecutiveNoMatchCount = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private var lastTapError: String? = null
+    private var scanMissStreak = 0
+
+    // used as default afterDelayMs for color matches
+    // companion also defines for external clarity
 
     /** Кэш координат: после первого нахождения кнопки тапаем сюда без долгого поиска */
     private data class CachedCoord(
@@ -127,6 +132,13 @@ class SmartEngine private constructor(
     private val coordCache = java.util.concurrent.ConcurrentHashMap<String, CachedCoord>()
     private var lastCacheScreenW = 0
     private var lastCacheScreenH = 0
+    private var burstUntil = 0L
+    private var lastTapAtMs = 0L
+    private var scanIndex = 0L
+    private val wideSearchTick = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val variantBuildCache = HashMap<String, TemplateVariant>()
+    private var lastYellowRejectLogMs = 0L
+
 
     private fun callerInfo(): String {
         return try {
@@ -180,9 +192,10 @@ class SmartEngine private constructor(
         val clickY: Float,
         val score: Float,
         val isContinue: Boolean,
-        val afterDelayMs: Long = 3000L,
+        val afterDelayMs: Long = 400L,
         val rule: com.example.autoclicker.data.SmartRule? = null,
-        val scale: Float = 0f
+        val scale: Float = 0f,
+        val source: String = "изображение"
     )
 
     data class RuleTemplate(
@@ -326,6 +339,7 @@ class SmartEngine private constructor(
 
     private fun resetState() {
         consecutiveNoMatchCount.clear()
+        wideSearchTick.clear()
         coordCache.clear()
         _status.value = CycleStatus.STOPPED
         _currentAction.value = "Остановлен"
@@ -414,8 +428,13 @@ class SmartEngine private constructor(
                 _currentAction.value = "Поиск правил (${effectiveConfig.rules.size} шт.)..."
 
                 scanCount++
-                val screenshot = service.takeScreenshotBitmap()
+                scanIndex++
+                val inBurst = System.currentTimeMillis() < burstUntil
+                val shotStart = System.currentTimeMillis()
+                val screenshot = service.takeScreenshotBitmap(minIntervalMs = if (inBurst) 400L else 1000L)
+                val shotMs = System.currentTimeMillis() - shotStart
                 if (screenshot == null) nullShotCount++
+                val searchStart = System.currentTimeMillis()
                 if (screenshot != null && !screenshot.isRecycled) {
                     try {
                         val sizeStr = "${screenshot.width}x${screenshot.height}"
@@ -485,11 +504,8 @@ class SmartEngine private constructor(
                                                 isContinue = rule.id.contains("continue", ignoreCase = true),
                                                 afterDelayMs = rule.afterDelayMs,
                                                 rule = rule,
-                                                scale = 1f
-                                            )
-                                            EventLogManager.log(
-                                                EventLogManager.TAG_AUTO_CLICKER,
-                                                "SMART: кэш ${rule.id} → (${cached.x.toInt()},${cached.y.toInt()})"
+                                                scale = 1f,
+                                                source = "кэш координат"
                                             )
                                             break
                                         }
@@ -499,7 +515,10 @@ class SmartEngine private constructor(
                                 if (rule.builtin) {
                                     val rt = ruleTemplates.firstOrNull { it.rule.id == rule.id }
                                     if (rt != null) {
-                                        val eval = evalBuiltinMatch(screenshot, rt)
+                                        val allowWide = System.currentTimeMillis() >= burstUntil ||
+                                            com.example.autoclicker.data.SmartLearnedStore.get(realW, realH, rule.id) == null
+                                        val smart = evalBuiltinMatchSmart(screenshot, rt, realW, realH, allowWide)
+                                        val eval = smart.eval
                                         if (eval.bestScore >= rule.threshold) {
                                             consecutiveNoMatchCount[rule.id] = 0
                                             val isContinue = rule.id.contains("continue", ignoreCase = true)
@@ -511,18 +530,17 @@ class SmartEngine private constructor(
                                                 isContinue = isContinue,
                                                 afterDelayMs = rule.afterDelayMs,
                                                 rule = rule,
-                                                scale = eval.bestScale
+                                                scale = eval.bestScale,
+                                                source = smart.source
+                                            )
+                                            EventLogManager.log(
+                                                EventLogManager.TAG_AUTO_CLICKER,
+                                                "SMART: ступень ${smart.stage} (${smart.source}), масштаб ${String.format(Locale.US, "%.2f", smart.multiplier)}"
                                             )
                                             break
                                         } else {
                                             val misses = (consecutiveNoMatchCount[rule.id] ?: 0) + 1
                                             consecutiveNoMatchCount[rule.id] = misses
-                                            if (misses % 3 == 0) {
-                                                EventLogManager.log(
-                                                    EventLogManager.TAG_AUTO_CLICKER,
-                                                    "SMART: score ${rule.id}=${String.format(Locale.US, "%.2f", maxOf(0f, eval.bestScore))} масштаб=${String.format(Locale.US, "%.2f", eval.bestScale)}"
-                                                )
-                                            }
                                         }
                                     }
                                 } else {
@@ -586,17 +604,31 @@ class SmartEngine private constructor(
                             val cacheKey = match.rule?.id ?: match.name
                             coordCache[cacheKey] = CachedCoord(finalX, finalY, realW, realH)
 
-                            if (match.rule != null && !match.rule.builtin) {
-                                EventLogManager.log(
-                                    EventLogManager.TAG_AUTO_CLICKER,
-                                    "SMART: найдено ${match.rule.id} score=${String.format(Locale.US, "%.2f", match.score)} масштаб=${String.format(Locale.US, "%.2f", match.scale)}, тап (${finalX.toInt()},${finalY.toInt()})"
-                                )
+                            scanMissStreak = 0
+                            val src = match.source
+                            val scorePct = (match.score * 100).toInt()
+                            val scaleStr = String.format(Locale.US, "%.2f", match.scale)
+                            when {
+                                src == "кэш координат" -> {
+                                    val c = coordCache[match.rule?.id ?: match.name]
+                                    EventLogManager.log(
+                                        EventLogManager.TAG_AUTO_CLICKER,
+                                        "SMART: КНОПКА НЕ ПРОВЕРЯЛАСЬ на этом снимке «${match.name}» (источник: кэш координат, тот же размер экрана ${realW}x${realH}, использований подряд ${c?.useCount ?: 0}) → НАЖАТИЕ вслепую по сохранённым координатам в (${finalX.toInt()}, ${finalY.toInt()})"
+                                    )
+                                }
+                                match.rule?.tapTarget == "fixed" -> {
+                                    EventLogManager.log(
+                                        EventLogManager.TAG_AUTO_CLICKER,
+                                        "SMART: КНОПКА ОБНАРУЖЕНА «${match.name}» (источник: $src, совпадение $scorePct%, масштаб $scaleStr) → НАЖАТИЕ в заданную точку (${finalX.toInt()}, ${finalY.toInt()}), а не в центр кнопки"
+                                    )
+                                }
+                                else -> {
+                                    EventLogManager.log(
+                                        EventLogManager.TAG_AUTO_CLICKER,
+                                        "SMART: КНОПКА ОБНАРУЖЕНА «${match.name}» (источник: $src, совпадение $scorePct%, масштаб $scaleStr) → НАЖАТИЕ в (${finalX.toInt()}, ${finalY.toInt()})"
+                                    )
+                                }
                             }
-
-                            EventLogManager.log(
-                                EventLogManager.TAG_AUTO_CLICKER,
-                                "SMART: Выбрано правило «${match.name}» (score ${(match.score * 100).toInt()}%), клик в (${finalX.toInt()}, ${finalY.toInt()})"
-                            )
 
                             val matchedRule = match.rule
                             val isSwipe = matchedRule != null && matchedRule.action == "swipe"
@@ -620,19 +652,56 @@ class SmartEngine private constructor(
                                 } catch (t: Throwable) {
                                     false
                                 }
-                                EventLogManager.log(
-                                    EventLogManager.TAG_AUTO_CLICKER,
-                                    "SMART: результат свайпа -> ${if (swipeOk) "completed" else "cancelled"}"
-                                )
+                                burstUntil = System.currentTimeMillis() + 6000L
+                                if (swipeOk) {
+                                    EventLogManager.log(
+                                        EventLogManager.TAG_AUTO_CLICKER,
+                                        "SMART: СВАЙП ВЫПОЛНЕН «${match.name}»"
+                                    )
+                                } else {
+                                    val reason = if (!AccessibilityServiceHolder.isConnected) "сервис доступности отключён" else "жест отменён системой"
+                                    EventLogManager.log(
+                                        EventLogManager.TAG_AUTO_CLICKER,
+                                        "SMART: СВАЙП НЕ ВЫПОЛНЕН «${match.name}»: $reason",
+                                        isError = true
+                                    )
+                                }
                             } else {
                                 _currentAction.value = "Нажатие «${match.name}»..."
                                 _lastAction.value = "${match.name} (${finalX.toInt()}, ${finalY.toInt()})"
 
+                                // Фаза катки для автомимикрии джойстиков
+                                if (match.isContinue || match.name.contains("continue", ignoreCase = true)) {
+                                    JoystickMatchPhase.notifyContinueDetected()
+                                } else if (match.name.contains("start", ignoreCase = true)) {
+                                    JoystickMatchPhase.notifyStartDetected()
+                                }
                                 val tapOk = performTapWithHooks(finalX, finalY)
-                                EventLogManager.log(
-                                    EventLogManager.TAG_AUTO_CLICKER,
-                                    "SMART: результат dispatchGesture -> ${if (tapOk) "completed (нажатие прошло)" else "cancelled (жест отклонен)"}"
-                                )
+                                burstUntil = System.currentTimeMillis() + 6000L
+                                if (lastTapAtMs > 0L && System.currentTimeMillis() - lastTapAtMs < 60_000L) {
+                                    EventLogManager.log(
+                                        EventLogManager.TAG_AUTO_CLICKER,
+                                        "SMART: интервал с прошлого нажатия: ${System.currentTimeMillis() - lastTapAtMs} мс"
+                                    )
+                                }
+                                lastTapAtMs = System.currentTimeMillis()
+                                if (tapOk) {
+                                    EventLogManager.log(
+                                        EventLogManager.TAG_AUTO_CLICKER,
+                                        "SMART: НАЖАТИЕ ВЫПОЛНЕНО «${match.name}» в (${finalX.toInt()}, ${finalY.toInt()}): жест принят системой"
+                                    )
+                                } else {
+                                    val reason = when {
+                                        !AccessibilityServiceHolder.isConnected -> "сервис доступности отключён"
+                                        lastTapError != null -> "ошибка жеста: $lastTapError"
+                                        else -> "жест отменён системой (dispatchGesture вернул cancelled)"
+                                    }
+                                    EventLogManager.log(
+                                        EventLogManager.TAG_AUTO_CLICKER,
+                                        "SMART: НАЖАТИЕ НЕ ВЫПОЛНЕНО «${match.name}» в (${finalX.toInt()}, ${finalY.toInt()}): $reason",
+                                        isError = true
+                                    )
+                                }
                             }
 
                             val delayMs = match.afterDelayMs
@@ -665,7 +734,15 @@ class SmartEngine private constructor(
 
                             _nextAction.value = "Следующий снимок через 1с"
                             val spent = System.currentTimeMillis() - loopStart
-                            delay((effectiveConfig.scanIntervalMs - spent).coerceAtLeast(50L))
+                            val searchMs = System.currentTimeMillis() - searchStart
+                            if (scanIndex <= 5L || scanIndex % 30L == 0L || shotMs + searchMs > 700L) {
+                                EventLogManager.log(
+                                    EventLogManager.TAG_AUTO_CLICKER,
+                                    "SMART: время: снимок ${shotMs} мс, поиск ${searchMs} мс"
+                                )
+                            }
+                            val interval = if (System.currentTimeMillis() < burstUntil) 300L else effectiveConfig.scanIntervalMs
+                            delay((interval - spent).coerceAtLeast(50L))
                         }
                     } finally {
                         if (!screenshot.isRecycled) {
@@ -676,7 +753,8 @@ class SmartEngine private constructor(
                     _currentAction.value = "Умный режим: ожидание снимка..."
                     _nextAction.value = "Следующий снимок через 1с"
                     val spentNull = System.currentTimeMillis() - loopStart
-                    delay((effectiveConfig.scanIntervalMs - spentNull).coerceAtLeast(50L))
+                    val intervalNull = if (System.currentTimeMillis() < burstUntil) 300L else effectiveConfig.scanIntervalMs
+                    delay((intervalNull - spentNull).coerceAtLeast(50L))
                 }
 
                 consecutiveErrors = 0
@@ -929,6 +1007,179 @@ class SmartEngine private constructor(
         return MatchEval(bestScore, bestScale, clickX, clickY)
     }
 
+
+    private fun buildVariant(bmp: Bitmap, multiplier: Float, baseScale: Float): TemplateVariant {
+        val scale = baseScale * multiplier
+        var targetW = (bmp.width * scale).roundToInt().coerceAtLeast(4)
+        var targetH = (bmp.height * scale).roundToInt().coerceAtLeast(4)
+        if (targetW % 2 != 0) targetW++
+        if (targetH % 2 != 0) targetH++
+        val downW = targetW / 2
+        val downH = targetH / 2
+        val scaledBmp = if (targetW == bmp.width && targetH == bmp.height) bmp
+        else Bitmap.createScaledBitmap(bmp, targetW, targetH, true)
+        val pixels = IntArray(targetW * targetH)
+        scaledBmp.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
+        if (scaledBmp !== bmp && !scaledBmp.isRecycled) scaledBmp.recycle()
+        val tGray = FloatArray(downW * downH)
+        var sumT = 0.0
+        for (dy in 0 until downH) {
+            val srcY0 = dy * 2
+            val srcY1 = srcY0 + 1
+            val r0 = srcY0 * targetW
+            val r1 = srcY1 * targetW
+            val dstOffset = dy * downW
+            for (dx in 0 until downW) {
+                val srcX0 = dx * 2
+                val srcX1 = srcX0 + 1
+                val p00 = pixels[r0 + srcX0]
+                val p01 = pixels[r0 + srcX1]
+                val p10 = pixels[r1 + srcX0]
+                val p11 = pixels[r1 + srcX1]
+                val g00 = (((p00 shr 16) and 0xFF) * 299 + ((p00 shr 8) and 0xFF) * 587 + (p00 and 0xFF) * 114)
+                val g01 = (((p01 shr 16) and 0xFF) * 299 + ((p01 shr 8) and 0xFF) * 587 + (p01 and 0xFF) * 114)
+                val g10 = (((p10 shr 16) and 0xFF) * 299 + ((p10 shr 8) and 0xFF) * 587 + (p10 and 0xFF) * 114)
+                val g11 = (((p11 shr 16) and 0xFF) * 299 + ((p11 shr 8) and 0xFF) * 587 + (p11 and 0xFF) * 114)
+                val avg = (g00 + g01 + g10 + g11) / 4000f
+                tGray[dstOffset + dx] = avg
+                sumT += avg
+            }
+        }
+        val meanT = sumT / (downW * downH)
+        val tDiff = FloatArray(downW * downH)
+        var sumDiffSq = 0.0
+        for (i in tGray.indices) {
+            val d = tGray[i] - meanT
+            tDiff[i] = d.toFloat()
+            sumDiffSq += d * d
+        }
+        val sigmaT = kotlin.math.sqrt(sumDiffSq)
+        return TemplateVariant(multiplier, downW, downH, tDiff, sigmaT)
+    }
+
+    private fun getOrBuildVariant(rt: RuleTemplate, multiplier: Float, H: Float): TemplateVariant {
+        val m = (multiplier * 100).roundToInt() / 100f
+        val key = "${rt.rule.id}@$m"
+        variantBuildCache[key]?.let { return it }
+        val baseScale = H / rt.rule.refHeight
+        val v = buildVariant(rt.rawBitmap, m, baseScale)
+        variantBuildCache[key] = v
+        return v
+    }
+
+    private data class BuiltinSmartEval(
+        val eval: MatchEval,
+        val source: String,
+        val stage: Int,
+        val multiplier: Float
+    )
+
+    /** 3 ступени: память → стандарт → широкий поиск. */
+    private fun evalBuiltinMatchSmart(
+        screenshot: Bitmap,
+        ruleTemplate: RuleTemplate,
+        realW: Int,
+        realH: Int,
+        allowWide: Boolean
+    ): BuiltinSmartEval {
+        val rule = ruleTemplate.rule
+        val H = minOf(screenshot.width, screenshot.height).toFloat()
+        val baseScale = H / rule.refHeight
+        val learned = com.example.autoclicker.data.SmartLearnedStore.get(realW, realH, rule.id)
+
+        // Ступень 1: запомненное
+        if (learned != null) {
+            val x0 = (learned.xFrac - 0.10f).coerceIn(0f, 1f)
+            val x1 = (learned.xFrac + 0.10f).coerceIn(0f, 1f)
+            val y0 = (learned.yFrac - 0.12f).coerceIn(0f, 1f)
+            val y1 = (learned.yFrac + 0.12f).coerceIn(0f, 1f)
+            val roi = createDownsampledRoi(screenshot, x0, x1, y0, y1)
+            if (roi != null) {
+                var bestScore = -1f
+                var bestScale = 0f
+                var bestCoords = Pair(0f, 0f)
+                var bestM = learned.multiplier
+                for (m in floatArrayOf(learned.multiplier, learned.multiplier * 0.96f, learned.multiplier * 1.04f)) {
+                    val v = getOrBuildVariant(ruleTemplate, m, H)
+                    val (score, coords) = searchTemplateInRoi(roi, v)
+                    if (score > bestScore) {
+                        bestScore = score
+                        bestScale = baseScale * v.scaleMultiplier
+                        bestCoords = coords
+                        bestM = m
+                    }
+                }
+                if (bestScore >= rule.threshold) {
+                    if (bestScore > learned.score) {
+                        com.example.autoclicker.data.SmartLearnedStore.put(
+                            realW, realH, rule.id, bestM,
+                            bestCoords.first / screenshot.width,
+                            bestCoords.second / screenshot.height,
+                            bestScore
+                        )
+                    }
+                    return BuiltinSmartEval(MatchEval(bestScore, bestScale, bestCoords.first, bestCoords.second), "память", 1, bestM)
+                }
+            }
+        }
+
+        // Ступень 2: как сейчас
+        val std = evalBuiltinMatch(screenshot, ruleTemplate)
+        if (std.bestScore >= rule.threshold) {
+            val mult = if (baseScale > 0f) (std.bestScale / baseScale) else 1f
+            com.example.autoclicker.data.SmartLearnedStore.put(
+                realW, realH, rule.id, mult,
+                std.clickX / screenshot.width, std.clickY / screenshot.height, std.bestScore
+            )
+            return BuiltinSmartEval(std, "изображение", 2, mult)
+        }
+
+        // Ступень 3: широкий поиск
+        if (allowWide) {
+            val tick = (wideSearchTick[rule.id] ?: 0) + 1
+            wideSearchTick[rule.id] = tick
+            if (tick % 3 == 1) {
+                val (rx0, rx1, ry0, ry1) = if (rule.id.contains("continue")) {
+                    floatArrayOf(0.30f, 1.0f, 0.45f, 1.0f)
+                } else {
+                    floatArrayOf(0.0f, 0.80f, 0.30f, 1.0f)
+                }
+                val roi = createDownsampledRoi(screenshot, rx0, rx1, ry0, ry1)
+                if (roi != null) {
+                    var bestScore = -1f
+                    var bestScale = 0f
+                    var bestCoords = Pair(0f, 0f)
+                    var bestM = 1f
+                    val multis = floatArrayOf(0.55f, 0.65f, 0.75f, 0.85f, 1.15f, 1.30f, 1.45f, 1.65f, 1.85f, 2.10f)
+                    for (m in multis) {
+                        val v = getOrBuildVariant(ruleTemplate, m, H)
+                        val (score, coords) = searchTemplateInRoi(roi, v)
+                        if (score > bestScore) {
+                            bestScore = score
+                            bestScale = baseScale * v.scaleMultiplier
+                            bestCoords = coords
+                            bestM = m
+                        }
+                    }
+                    if (bestScore >= rule.threshold) {
+                        com.example.autoclicker.data.SmartLearnedStore.put(
+                            realW, realH, rule.id, bestM,
+                            bestCoords.first / screenshot.width,
+                            bestCoords.second / screenshot.height,
+                            bestScore
+                        )
+                        return BuiltinSmartEval(
+                            MatchEval(bestScore, bestScale, bestCoords.first, bestCoords.second),
+                            "изображение", 3, bestM
+                        )
+                    }
+                }
+            }
+        }
+
+        return BuiltinSmartEval(std, "изображение", 2, 1f)
+    }
+
     private fun findMatchInScreenshot(
         screenshot: Bitmap,
         ruleTemplate: RuleTemplate
@@ -1042,9 +1293,11 @@ class SmartEngine private constructor(
 
     private suspend fun performTapWithHooks(x: Float, y: Float): Boolean {
         tapHooks?.beforeTap(0, x, y, 1, 1)
+        lastTapError = null
         val success = try {
             gestureExecutor.performTap(x, y)
         } catch (t: Throwable) {
+            lastTapError = t.message ?: t.toString()
             false
         }
         tapHooks?.afterTap(0, x, y, success, 1, 1)
@@ -1257,8 +1510,36 @@ class SmartEngine private constructor(
                     val clickX = x0 + (minX + maxX) / 2f
                     val clickY = y0 + (minY + maxY) / 2f
                     val score = (0.86f + (density * 0.10f)).coerceAtMost(0.98f)
-                    return FoundMatch(name, clickX, clickY, score, isContinue)
+                    return FoundMatch(name, clickX, clickY, score, isContinue, afterDelayMs = 400L, source = "цвет")
+                } else {
+                    val nowR = System.currentTimeMillis()
+                    if (nowR - lastYellowRejectLogMs >= 5000L) {
+                        lastYellowRejectLogMs = nowR
+                        EventLogManager.log(
+                            EventLogManager.TAG_AUTO_CLICKER,
+                            "SMART: жёлтая область отклонена: рамка ${boxW}x${boxH} (допустимо ширина $minAllowedW..$maxAllowedW, высота $minAllowedH..$maxAllowedH), пропорция ${"%.2f".format(aspect)}, плотность ${"%.2f".format(density)} (нужно ≥ 0.25)"
+                        )
+                    }
                 }
+            } else {
+                val nowR = System.currentTimeMillis()
+                if (nowR - lastYellowRejectLogMs >= 5000L) {
+                    lastYellowRejectLogMs = nowR
+                    val aspect = boxW.toFloat() / boxH.coerceAtLeast(1)
+                    EventLogManager.log(
+                        EventLogManager.TAG_AUTO_CLICKER,
+                        "SMART: жёлтая область отклонена: рамка ${boxW}x${boxH} (допустимо ширина $minAllowedW..$maxAllowedW, высота $minAllowedH..$maxAllowedH), пропорция ${"%.2f".format(aspect)}, плотность n/a (нужно ≥ 0.25)"
+                    )
+                }
+            }
+        } else {
+            val nowR = System.currentTimeMillis()
+            if (nowR - lastYellowRejectLogMs >= 5000L) {
+                lastYellowRejectLogMs = nowR
+                EventLogManager.log(
+                    EventLogManager.TAG_AUTO_CLICKER,
+                    "SMART: жёлтая область отклонена: рамка ${boxW}x${boxH} (допустимо ширина $minAllowedW..$maxAllowedW, высота $minAllowedH..$maxAllowedH), пропорция n/a, плотность n/a (нужно ≥ 0.25)"
+                )
             }
         }
         return null
@@ -1333,7 +1614,7 @@ class SmartEngine private constructor(
                     val clickX = x0 + (minX + maxX) / 2f
                     val clickY = y0 + (minY + maxY) / 2f
                     val score = (0.84f + (density * 0.10f)).coerceAtMost(0.96f)
-                    return FoundMatch(name, clickX, clickY, score, isContinue)
+                    return FoundMatch(name, clickX, clickY, score, isContinue, afterDelayMs = 400L, source = "цвет")
                 }
             }
         }

@@ -1,5 +1,7 @@
 package com.example.autoclicker.service
 
+import kotlinx.coroutines.launch
+
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
@@ -47,6 +49,7 @@ class SettingsPopupWindow(
     interface Callbacks {
         fun onStartPointCalibration(pointId: Int)
         fun onStartSwipeCalibration(swipeId: Int, isStart: Boolean)
+        fun onStartJoystickCalibration(kind: Int)
         fun onOpenMainActivity()
         fun onToggleVisualOverlay()
         fun onCloseService()
@@ -69,12 +72,15 @@ class SettingsPopupWindow(
 
     // Слайдеры, которые сейчас может тянуть палец: пока тянем, окно не перерисовываем
     private val sliders = mutableListOf<NeonGlassSlider>()
+    private var schedDayOffset = 1
+    private var schedHour = 9
+    private var schedMinute = 0
 
     private fun dp(value: Int): Int = (value * density).toInt()
 
     fun isShowing(): Boolean = isShown
 
-    fun show(type: WindowType, anchorX: Int, anchorY: Int, anchorWidth: Int, anchorHeight: Int) {
+    fun show(type: WindowType, anchorX: Int = 0, anchorY: Int = 0, anchorWidth: Int = 0, anchorHeight: Int = 0) {
         if (isShown) {
             dismiss()
         }
@@ -279,6 +285,22 @@ class SettingsPopupWindow(
             left.layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(6) }
             right.layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f)
             addView(left)
+            addView(right)
+        }
+
+    private fun twoButtons(left: View, mid: View, right: View): LinearLayout =
+        LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(4); bottomMargin = dp(4) }
+            left.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            mid.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2f)
+            right.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addView(left)
+            addView(mid)
             addView(right)
         }
 
@@ -542,6 +564,161 @@ class SettingsPopupWindow(
                 )
             }
         }
+
+        // ===== ДЖОЙСТИКИ =====
+        val joyRepo = com.example.autoclicker.data.JoystickRepository.getInstance(context)
+        val joy = joyRepo.getLatest()
+        container.addView(neonLabel(context, "ДЖОЙСТИКИ"))
+        container.addView(
+            toggle("Джойстики вместе с умным режимом", joy.masterEnabled) {
+                joyRepo.setMaster(it)
+            }
+        )
+        container.addView(
+            toggle("Автомимикрия (сценарий на всю катку)", joy.autoMimicEnabled) {
+                joyRepo.setAutoMimic(it)
+            }
+        )
+        container.addView(TextView(context).apply {
+            text = "Автомимикрия: движения по сценарию до «Продолжить», затем пауза и повтор после «Начать». Нужны поставленные J1/J2."
+            setTextColor(0xFF90A4AE.toInt())
+            textSize = 11f
+            setPadding(dp(8), dp(2), dp(8), dp(6))
+        })
+        val angles = listOf(0, 45, 90, 135, 180, 225, 270, 315)
+        val angleLabels = listOf("↑", "↗", "→", "↘", "↓", "↙", "←", "↖")
+        fun stickCard(id: Int) {
+            val st = if (id == 1) joy.stick1 else joy.stick2
+            val c = card()
+            c.addView(toggle("J$id включён", st.enabled) { en ->
+                joyRepo.updateStick(id) { it.copy(enabled = en) }
+                populateContent(WindowType.SMART)
+            })
+            c.addView(
+                infoRow(
+                    "J$id центр",
+                    if (st.isConfigured) "X=${st.x.toInt()} Y=${st.y.toInt()}" else "не задан",
+                    if (st.isConfigured) 0xFF80D8FF.toInt() else 0xFFB0BEC5.toInt()
+                )
+            )
+            val testEnabled = st.isConfigured && !com.example.autoclicker.engine.SmartEngine.getInstance(
+                context, com.example.autoclicker.engine.GestureExecutor(), settingsRepo
+            ).isRunning
+            c.addView(
+                twoButtons(
+                    glassButton(context, "Поставить", hueOffset = 20f, textSp = 11f) {
+                        callbacks.onStartJoystickCalibration(id)
+                    },
+                    glassButton(context, "Тест", hueOffset = 40f, textSp = 11f) {
+                        if (!st.isConfigured) return@glassButton
+                        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch {
+                            com.example.autoclicker.engine.JoystickController.getInstance(
+                                com.example.autoclicker.engine.GestureExecutor(), settingsRepo
+                            ).test(id)
+                        }
+                    }.apply { isEnabled = testEnabled }
+                )
+            )
+            c.addView(slider(40, 400, st.radiusPx, { "радиус $it px" }) { v ->
+                joyRepo.updateStick(id) { it.copy(radiusPx = v) }
+            })
+            c.addView(slider(30, 100, st.strength, { "сила $it%" }) { v ->
+                joyRepo.updateStick(id) { it.copy(strength = v) }
+            })
+            val modeLabel = if (st.mode == "circle") "Режим: круг" else "Режим: удержание"
+            c.addView(
+                fullButton(
+                    glassButton(context, modeLabel, hueOffset = 10f, textSp = 11f) {
+                        val next = if (st.mode == "hold") "circle" else "hold"
+                        joyRepo.updateStick(id) { it.copy(mode = next) }
+                        populateContent(WindowType.SMART)
+                    }, heightDp = 36, bottomDp = 4
+                )
+            )
+            if (st.mode == "hold") {
+                val idx = angles.indexOf(st.angleDeg).let { if (it < 0) 0 else it }
+                c.addView(
+                    fullButton(
+                        glassButton(context, "Направление: ${angleLabels[idx]}", hueOffset = 25f, textSp = 11f) {
+                            val next = angles[(idx + 1) % angles.size]
+                            joyRepo.updateStick(id) { it.copy(angleDeg = next) }
+                            populateContent(WindowType.SMART)
+                        }, heightDp = 36, bottomDp = 4
+                    )
+                )
+            } else {
+                c.addView(slider(2, 60, st.circlePeriodSec, { "$it с/оборот" }) { v ->
+                    joyRepo.updateStick(id) { it.copy(circlePeriodSec = v) }
+                })
+            }
+            c.addView(
+                fullButton(
+                    glassButton(context, "Сбросить J$id", hueOffset = -90f, textSp = 11f) {
+                        showConfirmDialog("Вы уверены?", "Сбросить J$id?") {
+                            joyRepo.resetStick(id)
+                            populateContent(WindowType.SMART)
+                        }
+                    }, heightDp = 36, bottomDp = 6
+                )
+            )
+            container.addView(c)
+        }
+        stickCard(1)
+        stickCard(2)
+        // Button B
+        val btn = joy.button
+        val bc = card()
+        bc.addView(toggle("Кнопка B включена", btn.enabled) { en ->
+            joyRepo.updateButton { it.copy(enabled = en) }
+            populateContent(WindowType.SMART)
+        })
+        bc.addView(
+            infoRow(
+                "B позиция",
+                if (btn.isConfigured) "X=${btn.x.toInt()} Y=${btn.y.toInt()}" else "не задана",
+                if (btn.isConfigured) 0xFFFF4081.toInt() else 0xFFB0BEC5.toInt()
+            )
+        )
+        bc.addView(
+            fullButton(
+                glassButton(context, "Поставить B", hueOffset = 30f, textSp = 11f) {
+                    callbacks.onStartJoystickCalibration(3)
+                }, heightDp = 36, bottomDp = 4
+            )
+        )
+        val bMode = if (btn.mode == "hold") "Режим: Удержание" else "Режим: Тап"
+        bc.addView(
+            fullButton(
+                glassButton(context, bMode, hueOffset = 15f, textSp = 11f) {
+                    val next = if (btn.mode == "tap") "hold" else "tap"
+                    joyRepo.updateButton { it.copy(mode = next) }
+                    populateContent(WindowType.SMART)
+                }, heightDp = 36, bottomDp = 4
+            )
+        )
+        if (btn.mode == "tap") {
+            bc.addView(slider(100, 5000, btn.intervalMs, { "каждые $it мс" }) { v ->
+                joyRepo.updateButton { it.copy(intervalMs = v) }
+            })
+        }
+        bc.addView(
+            fullButton(
+                glassButton(context, "Сбросить кнопку", hueOffset = -90f, textSp = 11f) {
+                    showConfirmDialog("Вы уверены?", "Сбросить кнопку B?") {
+                        joyRepo.resetButton()
+                        populateContent(WindowType.SMART)
+                    }
+                }, heightDp = 36, bottomDp = 6
+            )
+        )
+        container.addView(bc)
+        container.addView(TextView(context).apply {
+            text = "Джойстики работают только пока включён умный режим"
+            setTextColor(0xFF90A4AE.toInt())
+            textSize = 11f
+            setPadding(dp(8), dp(4), dp(8), dp(8))
+        })
+
     }
 
     // ===== «ЕЩЁ» =====
@@ -646,8 +823,14 @@ class SettingsPopupWindow(
         container.addView(neonLabel(context, "ОТЛОЖЕННЫЙ ЗАПУСК"))
         val sched = settings
         val schedInfo = if (sched.scheduleEnabled && sched.scheduleAtEpochMs > 0L) {
-            val fmt = java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.getDefault())
-            "Вкл: ${fmt.format(java.util.Date(sched.scheduleAtEpochMs))} (${sched.scheduleTarget})"
+            val fmt = java.text.SimpleDateFormat("EEE dd.MM HH:mm", java.util.Locale.getDefault())
+            val left = sched.scheduleAtEpochMs - System.currentTimeMillis()
+            val leftStr = if (left > 0) {
+                val sec = left / 1000
+                val d = sec / 86400; val h = (sec % 86400) / 3600; val m = (sec % 3600) / 60; val s = sec % 60
+                " (через ${if (d > 0) "${d}д " else ""}${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')})"
+            } else " (сейчас)"
+            "Вкл: ${fmt.format(java.util.Date(sched.scheduleAtEpochMs))}$leftStr"
         } else {
             "Выкл — старт сразу"
         }
@@ -657,6 +840,99 @@ class SettingsPopupWindow(
             textSize = 12f
             setPadding(dp(8), dp(2), dp(8), dp(6))
         })
+        // Степперы день/час/минута
+        fun dayLabel(): String {
+            val cal = java.util.Calendar.getInstance()
+            cal.add(java.util.Calendar.DAY_OF_YEAR, schedDayOffset)
+            val date = java.text.SimpleDateFormat("dd.MM", java.util.Locale.getDefault()).format(cal.time)
+            return when (schedDayOffset) {
+                0 -> "Сегодня ($date)"
+                1 -> "Завтра ($date)"
+                2 -> "Послезавтра ($date)"
+                else -> "Через $schedDayOffset дн. ($date)"
+            }
+        }
+        val dayTv = TextView(context).apply {
+            text = dayLabel()
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 13f
+            gravity = android.view.Gravity.CENTER
+        }
+        container.addView(twoButtons(
+            glassButton(context, "−", 36f, 14f, 0f, false, 14f) {
+                schedDayOffset = (schedDayOffset - 1).coerceAtLeast(0)
+                dayTv.text = dayLabel()
+            },
+            dayTv,
+            glassButton(context, "+", 36f, 14f, 0f, false, 14f) {
+                schedDayOffset = (schedDayOffset + 1).coerceAtMost(60)
+                dayTv.text = dayLabel()
+            }
+        ))
+        val hourTv = TextView(context).apply {
+            text = "%02d".format(schedHour)
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 13f
+            gravity = android.view.Gravity.CENTER
+        }
+        container.addView(twoButtons(
+            glassButton(context, "−ч", 36f, 14f, 0f, false, 12f) {
+                schedHour = (schedHour + 23) % 24
+                hourTv.text = "%02d".format(schedHour)
+            },
+            hourTv,
+            glassButton(context, "+ч", 36f, 14f, 0f, false, 12f) {
+                schedHour = (schedHour + 1) % 24
+                hourTv.text = "%02d".format(schedHour)
+            }
+        ))
+        val minTv = TextView(context).apply {
+            text = "%02d".format(schedMinute)
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 13f
+            gravity = android.view.Gravity.CENTER
+        }
+        container.addView(twoButtons(
+            glassButton(context, "−1м", 36f, 12f, 0f, false, 11f) {
+                schedMinute = (schedMinute + 59) % 60
+                minTv.text = "%02d".format(schedMinute)
+            },
+            minTv,
+            glassButton(context, "+1м", 36f, 12f, 0f, false, 11f) {
+                schedMinute = (schedMinute + 1) % 60
+                minTv.text = "%02d".format(schedMinute)
+            }
+        ))
+        val summaryTv = TextView(context).apply {
+            val cal = java.util.Calendar.getInstance()
+            cal.add(java.util.Calendar.DAY_OF_YEAR, schedDayOffset)
+            cal.set(java.util.Calendar.HOUR_OF_DAY, schedHour)
+            cal.set(java.util.Calendar.MINUTE, schedMinute)
+            text = "Старт: " + java.text.SimpleDateFormat("EEE dd.MM HH:mm", java.util.Locale.getDefault()).format(cal.time)
+            setTextColor(0xFF80D8FF.toInt())
+            textSize = 12f
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+        }
+        container.addView(summaryTv)
+        container.addView(
+            fullButton(glassButton(context, "Включить отложенный старт", 42f, 16f, 40f, false, 12f) {
+                val cal = java.util.Calendar.getInstance()
+                cal.add(java.util.Calendar.DAY_OF_YEAR, schedDayOffset)
+                cal.set(java.util.Calendar.HOUR_OF_DAY, schedHour)
+                cal.set(java.util.Calendar.MINUTE, schedMinute)
+                cal.set(java.util.Calendar.SECOND, 0)
+                cal.set(java.util.Calendar.MILLISECOND, 0)
+                if (cal.timeInMillis <= System.currentTimeMillis()) {
+                    android.widget.Toast.makeText(context, "Это время уже прошло", android.widget.Toast.LENGTH_SHORT).show()
+                } else {
+                    settingsRepo.updateSchedule(true, cal.timeInMillis, "all")
+                    val fmt = java.text.SimpleDateFormat("EEE dd.MM HH:mm", java.util.Locale.getDefault())
+                    android.widget.Toast.makeText(context, "Старт: ${fmt.format(cal.time)}", android.widget.Toast.LENGTH_SHORT).show()
+                    populateContent(WindowType.MORE)
+                }
+            }, 42, 6)
+        )
+        // Быстрые пресеты
         container.addView(
             fullButton(glassButton(context, "Через 1 час", 40f, 16f, 20f, false, 11f) {
                 val at = System.currentTimeMillis() + 60L * 60L * 1000L

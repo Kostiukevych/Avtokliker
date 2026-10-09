@@ -218,7 +218,7 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
         floatingBadgeButton = com.example.autoclicker.ui.views.BlackHoleBadgeView(this).apply {
             val sizePx = dpToPx(64)
             layoutParams = FrameLayout.LayoutParams(sizePx, sizePx)
-            showPlay = true
+            isRunning = false
             setBackgroundColor(Color.TRANSPARENT)
 
             var initialX = 0
@@ -334,7 +334,7 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
             setTextColor(0xFF80D8FF.toInt())
             textSize = 12f
             typeface = android.graphics.Typeface.DEFAULT_BOLD
-            setPadding(dpToPx(6), 0, dpToPx(6), 0)
+            setPadding(dp(6), 0, dp(6), 0)
         }
         headerLayout.addView(titleText)
         headerLayout.addView(clockText)
@@ -763,6 +763,45 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
     }
 
 
+    override fun onStartJoystickCalibration(kind: Int) {
+        popupWindow.dismiss()
+        setMode(minimized = true)
+        rootContainer?.visibility = android.view.View.GONE
+        val label = when (kind) {
+            1 -> "J1"
+            2 -> "J2"
+            else -> "B"
+        }
+        activeCalibrationView?.dismiss()
+        activeCalibrationView = CalibrationOverlayView(
+            context = this,
+            currentPointId = 20 + kind,
+            onCoordinateCaptured = { _, x, y ->
+                val (sw, sh) = try {
+                    val dm = android.util.DisplayMetrics()
+                    @Suppress("DEPRECATION")
+                    windowManager.defaultDisplay.getRealMetrics(dm)
+                    dm.widthPixels to dm.heightPixels
+                } catch (_: Exception) {
+                    0 to 0
+                }
+                com.example.autoclicker.data.JoystickRepository.getInstance(this)
+                    .setPosition(kind, x, y, sw, sh)
+                EventLogManager.log(
+                    EventLogManager.TAG_OVERLAY,
+                    "JOYSTICK: $label поставлена ($x, $y)"
+                )
+            },
+            onDismissed = {
+                activeCalibrationView = null
+                rootContainer?.visibility = android.view.View.VISIBLE
+                setMode(minimized = false)
+                popupWindow.show(SettingsPopupWindow.WindowType.SMART)
+            }
+        )
+        activeCalibrationView?.show()
+    }
+
     override fun onStartMacroRecording() {
         if (!android.provider.Settings.canDrawOverlays(this)) {
             android.widget.Toast.makeText(this, "Нужно разрешение «Поверх других приложений»", android.widget.Toast.LENGTH_SHORT).show()
@@ -789,12 +828,21 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
                 visualOverlay?.updateSettings(settings)
                 popupWindow.updateSettings(settings)
                 checkOverlapWarning()
-                btnRunPoints.isOn = settings.runPoints
-                btnRunPoints.text = if (settings.runPoints) "✔ Точки" else "Точки"
-                btnRunSwipes.isOn = settings.runSwipes
-                btnRunSwipes.text = if (settings.runSwipes) "✔ Свайпы" else "Свайпы"
-                btnRunSmart.isOn = settings.isSmartMode
-                btnRunSmart.text = if (settings.isSmartMode) "✔ Умный" else "Умный"
+                try {
+                    btnRunPoints.isOn = settings.runPoints
+                    btnRunPoints.text = if (settings.runPoints) "✔ Точки" else "Точки"
+                    btnRunSwipes.isOn = settings.runSwipes
+                    btnRunSwipes.text = if (settings.runSwipes) "✔ Свайпы" else "Свайпы"
+                    btnRunSmart.isOn = settings.isSmartMode
+                    btnRunSmart.text = if (settings.isSmartMode) "✔ Умный" else "Умный"
+                } catch (_: Exception) {
+                }
+            }
+        }
+        serviceScope.launch {
+            com.example.autoclicker.data.JoystickRepository.getInstance(this@FloatingOverlayService)
+                .settings.collect { joy ->
+                visualOverlay?.updateJoystick(joy)
             }
         }
     }
@@ -854,8 +902,7 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
                     stopBtn.alpha = 1.0f
                     stopBtn.isOn = true
 
-                    floatingBadgeButton.showPlay = false
-                    floatingBadgeButton.setTextColor(Color.parseColor("#FF5252"))
+                    floatingBadgeButton.isRunning = true
                 } else {
                     startBtn.text = "START"
                     startBtn.isOn = false
@@ -866,8 +913,7 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
                     stopBtn.alpha = 0.5f
                     stopBtn.isOn = false
 
-                    floatingBadgeButton.showPlay = true
-                    floatingBadgeButton.setTextColor(Color.parseColor("#00E676"))
+                    floatingBadgeButton.isRunning = false
                 }
             }
         }
@@ -967,11 +1013,11 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
         }
     }
 
+    private fun dp(dp: Int): Int = dpToPx(dp)
+
     private fun dpToPx(dp: Int): Int {
         return (dp * resources.displayMetrics.density).toInt()
     }
-
-    private fun dp(dp: Int): Int = dpToPx(dp)
 
     private fun shutdownAllWindowsAndServices() {
         neonAnimator?.cancel()
@@ -1009,9 +1055,38 @@ class FloatingOverlayService : Service(), TapHooks, SettingsPopupWindow.Callback
         }
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_HIDE_OVERLAY) {
+            shutdownAllWindowsAndServices()
+            return START_NOT_STICKY
+        }
+        // Держим процесс через FGS (без второго уведомления)
+        try {
+            AutoClickForegroundService.start(applicationContext)
+        } catch (_: Exception) {
+        }
+        return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        EventLogManager.log(
+            EventLogManager.TAG_OVERLAY,
+            "OVERLAY: приложение убрано из недавних — не останавливаем"
+        )
+        try {
+            FloatingOverlayService.start(this)
+            AutoClickForegroundService.start(this)
+        } catch (_: Exception) {
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        const val ACTION_SHOW_OVERLAY = "com.example.autoclicker.action.SHOW_OVERLAY"
+        const val ACTION_HIDE_OVERLAY = "com.example.autoclicker.action.HIDE_OVERLAY"
+
         fun start(context: Context) {
             val intent = Intent(context, FloatingOverlayService::class.java)
             context.startService(intent)

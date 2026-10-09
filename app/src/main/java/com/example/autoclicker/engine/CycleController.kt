@@ -222,10 +222,16 @@ class CycleController private constructor(
         tapIndex: Int = 1,
         totalTaps: Int = 1
     ): Boolean {
+        EventLogManager.log(
+            EventLogManager.TAG_CYCLE,
+            "ТОЧКА $pointId: НАЖАТИЕ по заданным координатам (${x.toInt()}, ${y.toInt()}), попытка $tapIndex/$totalTaps. Наличие кнопки на экране в этом режиме НЕ проверяется"
+        )
         tapHooks?.beforeTap(pointId, x, y, tapIndex, totalTaps)
+        var err: String? = null
         val success = try {
             gestureExecutor.performTap(x, y)
         } catch (t: Throwable) {
+            err = t.message ?: t.toString()
             EventLogManager.log(
                 EventLogManager.TAG_CYCLE,
                 "ERROR: Ошибка жеста: ${t.message}",
@@ -234,6 +240,24 @@ class CycleController private constructor(
             false
         }
         tapHooks?.afterTap(pointId, x, y, success, tapIndex, totalTaps)
+        if (success) {
+            EventLogManager.log(
+                EventLogManager.TAG_CYCLE,
+                "ТОЧКА $pointId: НАЖАТИЕ ВЫПОЛНЕНО в (${x.toInt()}, ${y.toInt()})"
+            )
+        } else {
+            val reason = when {
+                !com.example.autoclicker.service.AccessibilityServiceHolder.isConnected ->
+                    "сервис доступности отключён"
+                err != null -> "ошибка жеста: $err"
+                else -> "жест отменён системой"
+            }
+            EventLogManager.log(
+                EventLogManager.TAG_CYCLE,
+                "ТОЧКА $pointId: НАЖАТИЕ НЕ ВЫПОЛНЕНО в (${x.toInt()}, ${y.toInt()}): $reason",
+                isError = true
+            )
+        }
         return success
     }
 

@@ -15,6 +15,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import com.example.autoclicker.data.ClickerSettings
+import com.example.autoclicker.data.JoystickSettings
 
 /**
  * Полноэкранный прозрачный оверлей с флагом FLAG_NOT_TOUCHABLE.
@@ -34,6 +35,7 @@ class PointsVisualOverlayView(context: Context) : View(context) {
         }
 
     private var currentSettings: ClickerSettings? = null
+    private var joystickSettings: JoystickSettings? = null
 
     // Настройки рисования меток точек
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -128,6 +130,11 @@ class PointsVisualOverlayView(context: Context) : View(context) {
         } catch (_: Exception) {}
     }
 
+    fun updateJoystick(s: JoystickSettings) {
+        joystickSettings = s
+        invalidate()
+    }
+
     fun updateSettings(settings: ClickerSettings) {
         this.currentSettings = settings
         postInvalidate()
@@ -193,6 +200,33 @@ class PointsVisualOverlayView(context: Context) : View(context) {
         }
 
         // 2. Рисуем анимацию волны нажатия
+
+        // Джойстики
+        val joy = joystickSettings
+        if (showPoints && joy != null) {
+            fun drawStick(x: Float, y: Float, r: Float, color: Int, label: String) {
+                if (x <= 0f && y <= 0f) return
+                ringPaint.color = color
+                canvas.drawCircle(x, y, r, ringPaint)
+                canvas.drawCircle(x, y, dpToPx(3f), Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color })
+                textPaint.color = color
+                canvas.drawText(label, x, y - r - dpToPx(8f), textPaint)
+            }
+            if (joy.stick1.enabled && joy.stick1.isConfigured) {
+                drawStick(joy.stick1.x, joy.stick1.y, joy.stick1.radiusPx.toFloat(), 0xFF40C4FF.toInt(), "J1")
+            }
+            if (joy.stick2.enabled && joy.stick2.isConfigured) {
+                drawStick(joy.stick2.x, joy.stick2.y, joy.stick2.radiusPx.toFloat(), 0xFF69F0AE.toInt(), "J2")
+            }
+            if (joy.button.enabled && joy.button.isConfigured) {
+                val c = 0xFFFF4081.toInt()
+                ringPaint.color = c
+                canvas.drawCircle(joy.button.x, joy.button.y, dpToPx(18f), ringPaint)
+                textPaint.color = c
+                canvas.drawText("B", joy.button.x, joy.button.y - dpToPx(22f), textPaint)
+            }
+        }
+
         if (rippleProgress < 1f) {
             val baseColor = if (rippleSuccess) Color.parseColor("#00E676") else Color.parseColor("#FF1744")
             val alpha = ((1f - rippleProgress) * 255).toInt().coerceIn(0, 255)

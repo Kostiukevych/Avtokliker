@@ -8,6 +8,8 @@ import android.widget.Toast
 import com.example.autoclicker.data.EventLogManager
 import com.example.autoclicker.data.SettingsRepository
 import com.example.autoclicker.service.AutoClickForegroundService
+import com.example.autoclicker.service.AccessibilityServiceHolder
+import com.example.autoclicker.service.AccessibilityStatus
 
 /**
  * Единая точка запуска и остановки всех режимов.
@@ -17,6 +19,9 @@ import com.example.autoclicker.service.AutoClickForegroundService
  * STOP останавливает всё (макрос, свайпы, умный режим, точки).
  */
 object RunCoordinator {
+
+    private val _isRunning = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val isRunning: kotlinx.coroutines.flow.StateFlow<Boolean> = _isRunning
 
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -68,6 +73,13 @@ object RunCoordinator {
         val swipes = SwipeController.getInstance(gestureExecutor, settingsRepo)
 
         val s = settingsRepo.getLatestSettings()
+        if (AccessibilityStatus.isEnabledInSystem(app) && !AccessibilityServiceHolder.isConnected) {
+            var waited = 0
+            while (!AccessibilityServiceHolder.isConnected && waited < 3000) {
+                try { Thread.sleep(200) } catch (_: InterruptedException) { break }
+                waited += 200
+            }
+        }
         val started = mutableListOf<String>()
         val problems = mutableListOf<String>()
 
@@ -79,8 +91,20 @@ object RunCoordinator {
 
         fun startSmart() {
             if (!s.isSmartMode) return
-            if (smart.start()) started.add("Умный режим")
-            else problems.add("Умный режим не запущен: проверьте сервис доступности")
+            if (smart.start()) {
+                started.add("Умный режим")
+                val joyRepo = com.example.autoclicker.data.JoystickRepository.getInstance(app)
+                val js = joyRepo.getLatest()
+                if (js.masterEnabled) {
+                    if (js.hasAnyActive) {
+                        if (JoystickController.getInstance(gestureExecutor, settingsRepo).start()) {
+                            started.add("Джойстики")
+                        }
+                    } else {
+                        problems.add("Джойстики включены, но не поставлены на экран")
+                    }
+                }
+            } else problems.add("Умный режим не запущен: проверьте сервис доступности")
         }
         fun startPoints() {
             if (!s.runPoints) return
@@ -123,6 +147,8 @@ object RunCoordinator {
         }
 
         if (started.isNotEmpty()) {
+            _isRunning.value = true
+            settingsRepo.setRunActive(true)
             // Приоритет процесса и процессор: иначе в игре система может усыпить или выгрузить приложение
             try {
                 AutoClickForegroundService.start(app)
@@ -155,15 +181,20 @@ object RunCoordinator {
     /**
      * Остановка всех режимов. reason попадает в журнал.
      */
-    fun stopAll(context: Context, reason: String = "кнопка Стоп") {
+    fun stopAll(context: Context, reason: String = "кнопка Стоп", clearActiveFlag: Boolean = true) {
         val app = context.applicationContext
         val settingsRepo = SettingsRepository.getInstance(app)
         val gestureExecutor = GestureExecutor()
         EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "STOP: остановка всех режимов, причина: $reason")
+        JoystickController.getInstance(gestureExecutor, settingsRepo).stop("stopAll: $reason")
         MacroController.getInstance(gestureExecutor, settingsRepo).stop()
         SwipeController.getInstance(gestureExecutor, settingsRepo).stop()
         SmartEngine.getInstance(app, gestureExecutor, settingsRepo).stop(reason)
         CycleController.getInstance(gestureExecutor, settingsRepo).stop()
+        _isRunning.value = false
         releaseWakeLock()
+        if (clearActiveFlag) {
+            settingsRepo.setRunActive(false)
+        }
     }
 }

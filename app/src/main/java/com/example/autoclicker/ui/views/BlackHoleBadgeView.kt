@@ -28,6 +28,12 @@ class BlackHoleBadgeView @JvmOverloads constructor(
             invalidate()
         }
 
+    var isRunning: Boolean
+        get() = !showPlay
+        set(value) {
+            showPlay = !value
+        }
+
     fun setTextColor(color: Int) {
         // Compatibility with FloatingOverlayService
     }

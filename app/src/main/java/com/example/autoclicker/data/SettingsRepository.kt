@@ -10,7 +10,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * Репозиторий хранения настроек в SharedPreferences.
  * Сохраняет все координаты, таймеры, ориентацию и параметры точек (1..10) на диск.
  */
-class SettingsRepository private constructor(val context: Context) {
+class SettingsRepository(val context: Context) {
 
     private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences(
         PREFS_NAME,
@@ -277,6 +277,18 @@ class SettingsRepository private constructor(val context: Context) {
             .putString(KEY_SCHEDULE_TARGET, target)
             .apply()
         _settings.value = loadSettings()
+        try {
+            if (enabled && atEpochMs > 0L) {
+                com.example.autoclicker.service.ScheduleManager.schedule(context, atEpochMs)
+            } else {
+                com.example.autoclicker.service.ScheduleManager.cancel(context)
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    fun clearSchedule() {
+        updateSchedule(false, 0L, "all")
     }
 
 
@@ -285,6 +297,21 @@ class SettingsRepository private constructor(val context: Context) {
         val final = if (cleaned.isEmpty()) "smart,points,swipes" else cleaned.distinct().joinToString(",")
         prefs.edit().putString(KEY_ACTION_ORDER, final).apply()
         _settings.value = loadSettings()
+    }
+
+
+    fun setActionPosition(item: String, position: Int) {
+        val list = (getLatestSettings().actionOrder.split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }).toMutableList()
+        list.remove(item)
+        val idx = (position - 1).coerceIn(0, list.size)
+        list.add(idx, item)
+        // Ensure all three keys present
+        for (k in listOf("smart", "points", "swipes")) {
+            if (k !in list) list.add(k)
+        }
+        updateActionOrder(list.distinct().joinToString(","))
     }
 
     fun moveActionOrder(item: String, up: Boolean) {
@@ -299,9 +326,12 @@ class SettingsRepository private constructor(val context: Context) {
         updateActionOrder(list.joinToString(","))
     }
 
-    fun clearSchedule() {
-        updateSchedule(false, 0L, "all")
+
+    fun setRunActive(active: Boolean) {
+        prefs.edit().putBoolean(KEY_RUN_ACTIVE, active).apply()
     }
+
+    fun isRunActive(): Boolean = prefs.getBoolean(KEY_RUN_ACTIVE, false)
 
     fun updateNeonBrightness(brightness: Int) {
         val b = brightness.coerceIn(0, 100)
@@ -351,7 +381,7 @@ class SettingsRepository private constructor(val context: Context) {
         editor.remove("swipe${id}_start_x")
         editor.remove("swipe${id}_start_y")
         editor.remove("swipe${id}_end_x")
-        editor.remove("swipe${id}_end_y")
+        editor.remove("swipeTournament_end_y")
         editor.remove("swipe${id}_duration_ms")
         editor.remove("swipe${id}_interval_sec")
         editor.remove("swipe${id}_enabled")
@@ -468,6 +498,7 @@ class SettingsRepository private constructor(val context: Context) {
         private const val KEY_SCHEDULE_AT = "schedule_at_epoch_ms"
         private const val KEY_SCHEDULE_TARGET = "schedule_target"
         private const val KEY_ACTION_ORDER = "action_order"
+        private const val KEY_RUN_ACTIVE = "run_active"
 
         private const val KEY_MACRO_JSON = "macro_json"
         private const val KEY_MACRO_REPEAT_COUNT = "macro_repeat_count"

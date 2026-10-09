@@ -122,15 +122,35 @@ class SwipeController private constructor(
             if (fresh.isConfigured) {
                 EventLogManager.log(
                     EventLogManager.TAG_CYCLE,
-                    "SWIPE #$swipeId: Выполнение (${fresh.startX.toInt()}, ${fresh.startY.toInt()}) -> (${fresh.endX.toInt()}, ${fresh.endY.toInt()})"
+                    "СВАЙП $swipeId: по заданным координатам (${fresh.startX.toInt()}, ${fresh.startY.toInt()}) → (${fresh.endX.toInt()}, ${fresh.endY.toInt()}) за ${fresh.durationMs} мс. Наличие кнопки не проверяется"
                 )
-                gestureExecutor.performSwipe(
-                    fresh.startX,
-                    fresh.startY,
-                    fresh.endX,
-                    fresh.endY,
-                    fresh.durationMs
-                )
+                val ok = try {
+                    gestureExecutor.performSwipe(
+                        fresh.startX,
+                        fresh.startY,
+                        fresh.endX,
+                        fresh.endY,
+                        fresh.durationMs
+                    )
+                } catch (t: Throwable) {
+                    EventLogManager.log(
+                        EventLogManager.TAG_CYCLE,
+                        "СВАЙП $swipeId: СВАЙП НЕ ВЫПОЛНЕН: ошибка жеста: ${t.message}",
+                        isError = true
+                    )
+                    false
+                }
+                if (ok) {
+                    EventLogManager.log(EventLogManager.TAG_CYCLE, "СВАЙП $swipeId: СВАЙП ВЫПОЛНЕН")
+                } else {
+                    val reason = if (!com.example.autoclicker.service.AccessibilityServiceHolder.isConnected)
+                        "сервис доступности отключён" else "жест отменён системой"
+                    EventLogManager.log(
+                        EventLogManager.TAG_CYCLE,
+                        "СВАЙП $swipeId: СВАЙП НЕ ВЫПОЛНЕН: $reason",
+                        isError = true
+                    )
+                }
             } else {
                 EventLogManager.log(
                     EventLogManager.TAG_CYCLE,

@@ -1,245 +1,269 @@
 package com.example.autoclicker
 
-import android.Manifest
+import android.app.ActivityManager
+import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
+import android.database.ContentObserver
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.core.content.ContextCompat
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import com.example.autoclicker.data.SettingsRepository
+import com.example.autoclicker.engine.RunCoordinator
+import com.example.autoclicker.service.AutoClickAccessibilityService
 import com.example.autoclicker.service.AutoClickForegroundService
 import com.example.autoclicker.service.FloatingOverlayService
-import com.example.autoclicker.ui.MainViewModel
-import com.example.autoclicker.ui.screens.MainScreen
+import com.example.autoclicker.ui.MainScreen
 import com.example.autoclicker.ui.theme.AutoClickerTheme
 
+/**
+ * Главный экран приложения.
+ *
+ * Отвечает за:
+ * 1. Проверку и запрос разрешения SYSTEM_ALERT_WINDOW (наложение поверх окон).
+ * 2. Проверку и направление пользователя в настройки AccessibilityService.
+ * 3. Запуск / остановку FloatingOverlayService (плавающее окно управления).
+ * 4. Запуск / остановку AutoClickForegroundService (фоновая служба).
+ * 5. Отображение интерфейса настроек (Compose).
+ */
 class MainActivity : ComponentActivity() {
 
-    private val viewModel: MainViewModel by viewModels()
+    private lateinit var settingsRepository: SettingsRepository
 
-    private val requestNotificationPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
-            if (!isGranted) {
-                Toast.makeText(
-                    this,
-                    "Уведомления необходимы для надежной работы сервиса в фоне",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
+    // Состояния разрешений для реактивного обновления в Compose
+    private val hasOverlayPermissionState = mutableStateOf(false)
+    private val hasAccessibilityServiceState = mutableStateOf(false)
+
+    // ContentObserver для отслеживания изменения состояния AccessibilityService в реальном времени
+    private val accessibilityObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) {
+            super.onChange(selfChange)
+            checkPermissions()
         }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        requestNotificationPermissionIfNeeded()
+        settingsRepository = SettingsRepository(this)
 
         setContent {
             AutoClickerTheme {
-                val settings by viewModel.settings.collectAsState()
-                val logs by viewModel.logs.collectAsState()
-                val cycleStatus by viewModel.cycleStatus.collectAsState()
-                val currentAction by viewModel.currentAction.collectAsState()
-                val lastAction by viewModel.lastAction.collectAsState()
-                val nextAction by viewModel.nextAction.collectAsState()
-                val remainingSeconds by viewModel.remainingSeconds.collectAsState()
-                val countdownText by viewModel.countdownText.collectAsState()
-                val cycleNumber by viewModel.cycleNumber.collectAsState()
-                val isAccessibilityConnected by viewModel.isAccessibilityConnected.collectAsState()
-                val isOverlayGranted by viewModel.isOverlayPermissionGranted.collectAsState()
-                val isMacroRunning by viewModel.isMacroRunning.collectAsState()
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    val hasOverlay by remember { hasOverlayPermissionState }
+                    val hasAccessibility by remember { hasAccessibilityServiceState }
 
-                MainScreen(
-                    settings = settings,
-                    logs = logs,
-                    cycleStatus = cycleStatus,
-                    currentAction = currentAction,
-                    lastAction = lastAction,
-                    nextAction = nextAction,
-                    remainingSeconds = remainingSeconds,
-                    countdownText = countdownText,
-                    cycleNumber = cycleNumber,
-                    isAccessibilityConnected = isAccessibilityConnected,
-                    isOverlayGranted = isOverlayGranted,
-                    onOpenAccessibilitySettings = { openAccessibilitySettings() },
-                    onOpenOverlaySettings = { openOverlaySettings() },
-                    onLaunchOverlayService = { launchOverlay() },
-                    onStartCycle = { viewModel.startCycle() },
-                    onStopCycle = { viewModel.stopCycle() },
-                    onTestClick = { pointId -> viewModel.testClick(pointId) },
-                    onUpdatePointConfig = { id, enabled, count, interval ->
-                        viewModel.updatePointConfig(id, enabled, count, interval)
-                    },
-                    onUpdateCycleDelay = { minutes ->
-                        viewModel.updateCycleDelay(minutes)
-                    },
-                    onUpdateSmartMode = { enabled ->
-                        viewModel.updateSmartMode(enabled)
-                    },
-                    onUpdateRunPoints = { enabled ->
-                        viewModel.updateRunPoints(enabled)
-                    },
-                    onUpdateRunSwipes = { enabled ->
-                        viewModel.updateRunSwipes(enabled)
-                    },
-                    onUpdateRunSmart = { enabled ->
-                        viewModel.updateRunSmart(enabled)
-                    },
-                    onUpdateFirstCycleAllPoints = { enabled ->
-                        viewModel.updateFirstCycleAllPoints(enabled)
-                    },
-                    onResetPoint = { id ->
-                        viewModel.resetPoint(id)
-                    },
-                    onResetAllPoints = {
-                        viewModel.resetAllPoints()
-                    },
-                    onResetSwipe = { id ->
-                        viewModel.resetSwipe(id)
-                    },
-                    onResetAllSwipes = {
-                        viewModel.resetAllSwipes()
-                    },
-                    onDeleteAllMacros = {
-                        viewModel.clearMacro()
-                    },
-                    onResetSmartMode = {
-                        viewModel.resetSmartMode()
-                    },
-                    onResetCycleDelay = {
-                        viewModel.resetCycleDelay()
-                    },
-                    onResetNeonBrightness = {
-                        viewModel.resetNeonBrightness()
-                    },
-                    onResetActions = {
-                        viewModel.resetActions()
-                    },
-                    onResetAll = {
-                        viewModel.resetAll()
-                    },
-                    onDeleteAllCustomConfigs = {
-                        viewModel.deleteAllCustomConfigs()
-                    },
-                    onUpdateDebugScreenshots = { enabled ->
-                        viewModel.updateDebugScreenshots(enabled)
-                    },
-                    onUpdateSwipeConfig = { id, enabled, duration, interval ->
-                        viewModel.updateSwipeConfig(id, enabled, duration, interval)
-                    },
-                    onTestSwipe = { id ->
-                        viewModel.testSwipe(id)
-                    },
-                    isMacroRunning = isMacroRunning,
-                    onStartMacro = { viewModel.startMacro() },
-                    onStopMacro = { viewModel.stopMacro() },
-                    onStartMacroRecording = { launchMacroRecording() },
-                    onClearMacro = { viewModel.clearMacro() },
-                    onUpdateMacroConfig = { repeatCount, intervalSec ->
-                        viewModel.updateMacroConfig(repeatCount, intervalSec)
-                    },
-                    onClearLogs = { viewModel.clearLogs() },
-                    onCheckConfig = { onResult -> viewModel.checkConfigNow(onResult) }
-                )
+                    // Синхронизируем состояние запуска при каждом возвращении
+                    val isRunning by RunCoordinator.isRunning.collectAsState()
+
+                    MainScreen(
+                        settingsRepository = settingsRepository,
+                        hasOverlayPermission = hasOverlay,
+                        hasAccessibilityPermission = hasAccessibility,
+                        isAutomationRunning = isRunning,
+                        onRequestOverlayPermission = { requestOverlayPermission() },
+                        onOpenAccessibilitySettings = { openAccessibilitySettings() },
+                        onStartAutomation = { startAutomation() },
+                        onStopAutomation = { stopAutomation() },
+                        onToggleOverlay = { enabled ->
+                            if (enabled) {
+                                startOverlayService()
+                            } else {
+                                stopOverlayService()
+                            }
+                        }
+                    )
+                }
             }
         }
     }
 
     override fun onResume() {
         super.onResume()
-        viewModel.checkPermissions()
+        checkPermissions()
+        registerAccessibilityObserver()
+
+        // Проверяем, запущен ли оверлей, и если сервис упал - синхронизируем UI при необходимости
+        val isOverlayActive = isServiceRunning(FloatingOverlayService::class.java)
+        // Обновляем состояние оверлея при возврате в приложение
+    }
+
+    override fun onPause() {
+        super.onPause()
+        unregisterAccessibilityObserver()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ПРОВЕРКА И ЗАПРОС РАЗРЕШЕНИЙ
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Проверяет текущее состояние обоих ключевых разрешений.
+     */
+    private fun checkPermissions() {
+        hasOverlayPermissionState.value = Settings.canDrawOverlays(this)
+        hasAccessibilityServiceState.value = AutoClickAccessibilityService.isServiceRunning
     }
 
     /**
-     * Автоматический запуск плавающей кнопки при сворачивании приложения (Requirement А).
+     * Открывает экран настроек для выдачи разрешения "Поверх других приложений".
      */
-    override fun onStop() {
-        super.onStop()
-        if (Settings.canDrawOverlays(this)) {
-            try {
-                FloatingOverlayService.start(this)
-                AutoClickForegroundService.start(this)
-            } catch (e: Throwable) {
-                com.example.autoclicker.data.EventLogManager.log(
-                    com.example.autoclicker.data.EventLogManager.TAG_AUTO_CLICKER,
-                    "ERROR: onStop service start: ${e.message}",
-                    isError = true
-                )
-            }
-        }
-    }
-
-    private fun requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val isGranted = ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
-            if (!isGranted) {
-                requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }
-    }
-
-    private fun openAccessibilitySettings() {
-        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        startActivity(intent)
-        Toast.makeText(
-            this,
-            "Найдите AutoClicker в списке и включите его",
-            Toast.LENGTH_LONG
-        ).show()
-    }
-
-    private fun openOverlaySettings() {
-        val intent = Intent(
-            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-            Uri.parse("package:$packageName")
-        ).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        startActivity(intent)
-    }
-
-    private fun launchOverlay() {
+    private fun requestOverlayPermission() {
         if (!Settings.canDrawOverlays(this)) {
-            openOverlaySettings()
-            return
-        }
-        try {
-            FloatingOverlayService.start(this)
-            AutoClickForegroundService.start(this)
-            Toast.makeText(this, "Плавающая кнопка активирована", Toast.LENGTH_SHORT).show()
-        } catch (e: Throwable) {
-            com.example.autoclicker.data.EventLogManager.log(
-                com.example.autoclicker.data.EventLogManager.TAG_AUTO_CLICKER,
-                "ERROR: Не удалось запустить сервис: ${e.message}",
-                isError = true
+            val intent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
             )
+            try {
+                startActivity(intent)
+            } catch (e: Exception) {
+                // На некоторых кастомных прошивках может упасть прямой Intent по package
+                val fallbackIntent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
+                startActivity(fallbackIntent)
+            }
+        } else {
+            Toast.makeText(this, "Разрешение наложения уже получено", Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun launchMacroRecording() {
+    /**
+     * Открывает системный экран настроек Специальных возможностей.
+     */
+    private fun openAccessibilitySettings() {
+        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+        try {
+            startActivity(intent)
+            Toast.makeText(
+                this,
+                "Найдите 'Auto Clicker' и включите службу",
+                Toast.LENGTH_LONG
+            ).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Не удалось открыть настройки", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // УПРАВЛЕНИЕ СЛУЖБАМИ
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Запускает плавающее окно (FloatingOverlayService).
+     */
+    private fun startOverlayService() {
         if (!Settings.canDrawOverlays(this)) {
-            openOverlaySettings()
+            Toast.makeText(
+                this,
+                "Сначала разрешите отображение поверх других приложений",
+                Toast.LENGTH_SHORT
+            ).show()
+            requestOverlayPermission()
             return
         }
-        val overlay = com.example.autoclicker.service.MacroRecordingOverlayView(
-            context = this,
-            onMacroRecorded = {},
-            onDismissed = {}
-        )
-        overlay.show()
+
+        val intent = Intent(this, FloatingOverlayService::class.java).apply {
+            action = FloatingOverlayService.ACTION_SHOW_OVERLAY
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+    }
+
+    /**
+     * Останавливает плавающее окно.
+     */
+    private fun stopOverlayService() {
+        val intent = Intent(this, FloatingOverlayService::class.java).apply {
+            action = FloatingOverlayService.ACTION_HIDE_OVERLAY
+        }
+        startService(intent)
+    }
+
+    /**
+     * Запускает цикл автоматизации.
+     */
+    private fun startAutomation() {
+        if (!AutoClickAccessibilityService.isServiceRunning) {
+            Toast.makeText(
+                this,
+                "Служба специальных возможностей не активна!",
+                Toast.LENGTH_SHORT
+            ).show()
+            openAccessibilitySettings()
+            return
+        }
+
+        // Запускаем ForegroundService для защиты от выгрузки системой
+        val serviceIntent = Intent(this, AutoClickForegroundService::class.java).apply {
+            action = AutoClickForegroundService.ACTION_START
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
+
+        // Стартуем оверлей если он еще не открыт
+        if (Settings.canDrawOverlays(this)) {
+            startOverlayService()
+        }
+    }
+
+    /**
+     * Останавливает цикл автоматизации.
+     */
+    private fun stopAutomation() {
+        val serviceIntent = Intent(this, AutoClickForegroundService::class.java).apply {
+            action = AutoClickForegroundService.ACTION_STOP
+        }
+        startService(serviceIntent)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private fun registerAccessibilityObserver() {
+        try {
+            contentResolver.registerContentObserver(
+                Settings.Secure.getUriFor(Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES),
+                false,
+                accessibilityObserver
+            )
+        } catch (_: Exception) {}
+    }
+
+    private fun unregisterAccessibilityObserver() {
+        try {
+            contentResolver.unregisterContentObserver(accessibilityObserver)
+        } catch (_: Exception) {}
+    }
+
+    @Suppress("DEPRECATION")
+    private fun isServiceRunning(serviceClass: Class<*>): Boolean {
+        val manager = getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
+        return manager.getRunningServices(Int.MAX_VALUE).any { it.service.className == serviceClass.name }
     }
 }

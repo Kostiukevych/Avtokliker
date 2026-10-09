@@ -68,6 +68,8 @@ object ResetManager {
         val cm = SmartConfigManager.getInstance(context.applicationContext)
         cm.setMode(SmartConfigMode.DEFAULT_ONLY)
         cm.setActiveName("")
+        SmartLearnedStore.clear()
+        JoystickRepository.getInstance(context).resetAll()
         EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "RESET: умный режим сброшен (встроенный конфиг)")
     }
 
@@ -97,6 +99,8 @@ object ResetManager {
         val cm = SmartConfigManager.getInstance(context.applicationContext)
         cm.setMode(SmartConfigMode.DEFAULT_ONLY)
         cm.setActiveName("")
+        SmartLearnedStore.clear()
+        JoystickRepository.getInstance(context).resetAll()
         EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "RESET: сброшены все настройки")
     }
 
@@ -109,6 +113,7 @@ object ResetManager {
         }
         cm.setMode(SmartConfigMode.DEFAULT_ONLY)
         cm.setActiveName("")
+        SmartLearnedStore.clear()
         EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "RESET: загруженные конфиги удалены")
     }
 }

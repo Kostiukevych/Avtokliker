@@ -25,7 +25,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.isActive
 
 /**
  * Foreground Service для устойчивой работы кликера в фоновом режиме
@@ -62,22 +65,41 @@ class AutoClickForegroundService : Service() {
             "SERVICE: onStartCommand " + if (intent == null) "intent=null (перезапуск системой)" else "action=${intent.action}"
         )
         if (intent == null) {
-            // Система перезапустила сервис после выгрузки процесса: режимы НЕ возобновляются сами
-            EventLogManager.log(
-                EventLogManager.TAG_AUTO_CLICKER,
-                "SERVICE: сервис перезапущен системой, режимы остановлены, нажмите START",
-                isError = true
-            )
+            // Перезапуск системой: восстановить режимы, если работа была активна
+            if (settingsRepo.isRunActive()) {
+                serviceScope.launch {
+                    var connected = AccessibilityServiceHolder.isConnected
+                    var waited = 0
+                    while (!connected && waited < 5000 && isActive) {
+                        delay(500)
+                        waited += 500
+                        connected = AccessibilityServiceHolder.isConnected
+                    }
+                    if (settingsRepo.isRunActive()) {
+                        RunCoordinator.start(applicationContext)
+                        EventLogManager.log(
+                            EventLogManager.TAG_AUTO_CLICKER,
+                            "SERVICE: режимы восстановлены после перезапуска системой"
+                        )
+                    }
+                }
+            } else {
+                EventLogManager.log(
+                    EventLogManager.TAG_AUTO_CLICKER,
+                    "SERVICE: сервис перезапущен системой, режимы остановлены, нажмите START",
+                    isError = true
+                )
+            }
         }
         when (intent?.action) {
             ACTION_START -> {
                 RunCoordinator.start(applicationContext)
             }
             ACTION_STOP -> {
-                RunCoordinator.stopAll(applicationContext, "кнопка Стоп (уведомление)")
+                RunCoordinator.stopAll(applicationContext, "кнопка Стоп (уведомление)", clearActiveFlag = true)
             }
             ACTION_SHUTDOWN -> {
-                RunCoordinator.stopAll(applicationContext, "закрытие приложения")
+                RunCoordinator.stopAll(applicationContext, "закрытие приложения", clearActiveFlag = true)
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
@@ -90,6 +112,14 @@ class AutoClickForegroundService : Service() {
             EventLogManager.TAG_AUTO_CLICKER,
             "SERVICE: приложение убрано из списка недавних (задача удалена)"
         )
+        // Не останавливаем режимы — перезапускаем сервисы
+        try {
+            AutoClickForegroundService.start(this)
+            if (android.provider.Settings.canDrawOverlays(this)) {
+                FloatingOverlayService.start(this)
+            }
+        } catch (_: Exception) {
+        }
         super.onTaskRemoved(rootIntent)
     }
 
@@ -224,7 +254,12 @@ class AutoClickForegroundService : Service() {
 
     override fun onDestroy() {
         isRunning = false
-        RunCoordinator.stopAll(applicationContext, "служба AutoClickForegroundService уничтожена системой или приложением")
+        // Не сбрасываем флаг run_active — система могла убить сервис; режимы восстановятся
+        RunCoordinator.stopAll(
+            applicationContext,
+            "служба AutoClickForegroundService уничтожена системой или приложением",
+            clearActiveFlag = false
+        )
         serviceScope.cancel()
         EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "ForegroundService остановлен")
         super.onDestroy()

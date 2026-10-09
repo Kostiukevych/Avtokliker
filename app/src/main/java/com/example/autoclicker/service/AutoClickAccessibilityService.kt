@@ -6,83 +6,78 @@ import android.graphics.Bitmap
 import android.os.Build
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
-import androidx.core.content.ContextCompat
 import com.example.autoclicker.data.EventLogManager
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import java.util.concurrent.Executors
 import kotlin.coroutines.resume
 
-/**
- * Сервис специальных возможностей (AccessibilityService).
- *
- * Отвечает ТОЛЬКО за выполнение жестов (dispatchGesture) через GestureExecutor
- * и получение снимков экрана (takeScreenshot) для умного режима.
- * НЕ запускает бесконечных циклов автоматизации самостоятельно.
- */
 class AutoClickAccessibilityService : AccessibilityService() {
 
-    private var lastScreenshotTime: Long = 0L
-    private var lastScreenshotErrorLogTime: Long = 0L
+    private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val screenshotExecutor = Executors.newSingleThreadExecutor()
 
-    /**
-     * Создает снимок экрана в памяти через AccessibilityService.takeScreenshot API 30+.
-     * Не чаще одного снимка в секунду.
-     */
-    suspend fun takeScreenshotBitmap(): Bitmap? {
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        instance = this
+        AccessibilityServiceHolder.setService(this)
+        AccessibilityStatus.setRunning(true)
+        EventLogManager.log(EventLogManager.TAG_ACCESSIBILITY, "ACCESSIBILITY: Сервис подключен")
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // Не требуется для кликера
+    }
+
+    override fun onInterrupt() {
+        EventLogManager.log(EventLogManager.TAG_ACCESSIBILITY, "ACCESSIBILITY: Сервис прерван")
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        instance = null
+        AccessibilityServiceHolder.setService(null)
+        AccessibilityStatus.setRunning(false)
+        EventLogManager.log(EventLogManager.TAG_ACCESSIBILITY, "ACCESSIBILITY: Сервис отключен")
+        return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        instance = null
+        AccessibilityServiceHolder.setService(null)
+        AccessibilityStatus.setRunning(false)
+        serviceScope.cancel()
+        screenshotExecutor.shutdown()
+    }
+
+    suspend fun takeScreenshotCompat(): Bitmap? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            val errNow = System.currentTimeMillis()
-            if (errNow - lastScreenshotErrorLogTime >= 10000L) {
-                lastScreenshotErrorLogTime = errNow
-                EventLogManager.log(
-                    EventLogManager.TAG_AUTO_CLICKER,
-                    "SMART: снимок не удался: требуется Android 11+ (API 30+), текущий API ${Build.VERSION.SDK_INT}",
-                    isError = true
-                )
-            }
+            EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "SMART: Скриншот не поддерживается на Android < 11")
             return null
         }
 
-        val now = System.currentTimeMillis()
-        val elapsed = now - lastScreenshotTime
-        if (elapsed < 1000L) {
-            delay(1000L - elapsed)
-        }
-        lastScreenshotTime = System.currentTimeMillis()
-
         return suspendCancellableCoroutine { continuation ->
             try {
-                val executor = ContextCompat.getMainExecutor(this)
                 takeScreenshot(
                     Display.DEFAULT_DISPLAY,
-                    executor,
+                    screenshotExecutor,
                     object : TakeScreenshotCallback {
                         override fun onSuccess(screenshotResult: ScreenshotResult) {
                             try {
                                 val hardwareBuffer = screenshotResult.hardwareBuffer
                                 val colorSpace = screenshotResult.colorSpace
-                                val hwBitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, colorSpace)
-                                val argbBitmap = hwBitmap?.copy(Bitmap.Config.ARGB_8888, false)
-                                hwBitmap?.recycle()
+                                val bitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, colorSpace)
+                                val copy = bitmap?.copy(Bitmap.Config.ARGB_8888, false)
                                 hardwareBuffer.close()
-
                                 if (continuation.isActive) {
-                                    continuation.resume(argbBitmap)
-                                } else {
-                                    argbBitmap?.recycle()
+                                    continuation.resume(copy)
                                 }
-                            } catch (e: Throwable) {
-                                val errNow = System.currentTimeMillis()
-                                if (errNow - lastScreenshotErrorLogTime >= 10000L) {
-                                    lastScreenshotErrorLogTime = errNow
-                                    EventLogManager.log(
-                                        EventLogManager.TAG_AUTO_CLICKER,
-                                        "SMART: снимок не удался: ${e.message ?: e.javaClass.simpleName}",
-                                        isError = true
-                                    )
-                                }
+                            } catch (e: Exception) {
+                                EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "SMART: Ошибка обработки скриншота: ${e.message}")
                                 if (continuation.isActive) {
                                     continuation.resume(null)
                                 }
@@ -90,31 +85,15 @@ class AutoClickAccessibilityService : AccessibilityService() {
                         }
 
                         override fun onFailure(errorCode: Int) {
-                            val errNow = System.currentTimeMillis()
-                            if (errNow - lastScreenshotErrorLogTime >= 10000L) {
-                                lastScreenshotErrorLogTime = errNow
-                                EventLogManager.log(
-                                    EventLogManager.TAG_AUTO_CLICKER,
-                                    "SMART: снимок не удался, код $errorCode",
-                                    isError = true
-                                )
-                            }
+                            EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "SMART: Ошибка захвата экрана: код $errorCode")
                             if (continuation.isActive) {
                                 continuation.resume(null)
                             }
                         }
                     }
                 )
-            } catch (e: Throwable) {
-                val errNow = System.currentTimeMillis()
-                if (errNow - lastScreenshotErrorLogTime >= 10000L) {
-                    lastScreenshotErrorLogTime = errNow
-                    EventLogManager.log(
-                        EventLogManager.TAG_AUTO_CLICKER,
-                        "SMART: снимок не удался: ${e.message ?: e.javaClass.simpleName}",
-                        isError = true
-                    )
-                }
+            } catch (e: Exception) {
+                EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "SMART: Исключение при вызове takeScreenshot: ${e.message}")
                 if (continuation.isActive) {
                     continuation.resume(null)
                 }
@@ -122,54 +101,16 @@ class AutoClickAccessibilityService : AccessibilityService() {
         }
     }
 
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-        val caps = serviceInfo?.capabilities ?: 0
-        val canPerform = (caps and android.accessibilityservice.AccessibilityServiceInfo.CAPABILITY_CAN_PERFORM_GESTURES) != 0
-        EventLogManager.log(
-            EventLogManager.TAG_ACCESSIBILITY,
-            "AccessibilityService подключен (canPerformGestures=$canPerform)"
-        )
-        AccessibilityServiceHolder.setService(this)
-    }
+    suspend fun takeScreenshotBitmap(minIntervalMs: Long = 0L): Bitmap? = takeScreenshotCompat()
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // События интерфейса не требуются для кликера по координатам
-    }
+    companion object {
+        @Volatile
+        var instance: AutoClickAccessibilityService? = null
+            private set
 
-    override fun onInterrupt() {
-        EventLogManager.log(
-            EventLogManager.TAG_ACCESSIBILITY,
-            "AccessibilityService прерван системой"
-        )
-    }
+        fun isRunning(): Boolean = instance != null
 
-    override fun onUnbind(intent: Intent?): Boolean {
-        AccessibilityServiceHolder.setService(null)
-        EventLogManager.log(
-            EventLogManager.TAG_ACCESSIBILITY,
-            "AccessibilityService отключен"
-        )
-        return super.onUnbind(intent)
-    }
-
-    override fun onDestroy() {
-        AccessibilityServiceHolder.setService(null)
-        super.onDestroy()
-    }
-}
-
-/**
- * Потокобезопасный держатель активного экземпляра AccessibilityService.
- */
-object AccessibilityServiceHolder {
-    private val _service = MutableStateFlow<AutoClickAccessibilityService?>(null)
-    val service: StateFlow<AutoClickAccessibilityService?> = _service.asStateFlow()
-
-    val isConnected: Boolean
-        get() = _service.value != null
-
-    fun setService(instance: AutoClickAccessibilityService?) {
-        _service.value = instance
+        val isServiceRunning: Boolean
+            get() = instance != null
     }
 }
