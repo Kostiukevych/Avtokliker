@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outer accretion glow -->
+    <path
+        android:pathData="M54,28 A26,26 0 1,0 54,80 A26,26 0 1,0 54,28"
+        android:strokeColor="#4A148C"
+        android:strokeWidth="5"
+        android:fillColor="#00000000" />
+
+    <!-- Cyan/magenta disk ring -->
+    <path
+        android:pathData="M54,32 A22,22 0 1,0 54,76 A22,22 0 1,0 54,32"
+        android:strokeColor="#00E5FF"
+        android:strokeWidth="3.2"
+        android:fillColor="#00000000" />
+
+    <!-- Magenta accent arc (top-right feel via second ring) -->
+    <path
+        android:pathData="M54,36 A18,18 0 1,0 54,72 A18,18 0 1,0 54,36"
+        android:strokeColor="#E040FB"
+        android:strokeWidth="2.2"
+        android:fillColor="#00000000" />
+
+    <!-- Event horizon core -->
+    <path
+        android:pathData="M54,42 A12,12 0 1,0 54,66 A12,12 0 1,0 54,42"
+        android:fillColor="#05010D" />
+
+    <!-- Neon green core rim (running pulse look) -->
+    <path
+        android:pathData="M54,42 A12,12 0 1,0 54,66 A12,12 0 1,0 54,42"
+        android:strokeColor="#39FF14"
+        android:strokeWidth="1.8"
+        android:fillColor="#00000000" />
+
+    <!-- Center bright dot -->
+    <path
+        android:pathData="M54,50.5 A3.5,3.5 0 1,0 54,57.5 A3.5,3.5 0 1,0 54,50.5"
+        android:fillColor="#FFFFFF" />
+
+    <!-- Cursor / click triangle bottom-right -->
+    <path
+        android:pathData="M62,62 L78,70 L68,72 L72,82 L68,84 L64,74 L58,78 Z"
+        android:fillColor="#00E676"
+        android:strokeColor="#E8FFF0"
+        android:strokeWidth="1.2" />
+</vector>
