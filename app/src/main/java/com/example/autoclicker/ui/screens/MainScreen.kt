@@ -248,13 +248,9 @@ fun MainScreen(
                     }
 
                     // ----- РАЗРЕШЕНИЯ (исчезают после выдачи) -----
-                    val needBattery: Boolean = remember {
-                        val pm = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
-                        val isIgnoring = pm.isIgnoringBatteryOptimizations(context.packageName)
-                        !isIgnoring
-                    }
-                    var showBattery by remember { mutableStateOf(needBattery) }
-                    if (!isOverlayGranted || !isAccessibilityEnabledInSystem || showBattery) {
+                    // Overlay и Accessibility — только пока не выданы.
+                    // «Работа в фоне» не показываем: фон через плавающее окно + крестик в нём.
+                    if (!isOverlayGranted || !isAccessibilityEnabledInSystem) {
                         GlassLabel("РАЗРЕШЕНИЯ")
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -292,27 +288,14 @@ fun MainScreen(
                                 Text(
                                     text = "Accessibility включён, подключаюсь…",
                                     color = Color(0xFF80D8FF),
-                                    fontSize = 12.sp,
+                                    fontSize = 13.sp,
                                     modifier = Modifier.weight(1f).padding(8.dp)
                                 )
                             }
-                            if (showBattery) {
-                                GlassButton(
-                                    onClick = onOpenBatterySettings,
-                                    modifier = Modifier.weight(1f),
-                                    isOn = false,
-                                    height = 76.dp,
-                                    cornerRadius = 34.dp,
-                                    hueOffset = -20f
-                                ) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Text("Работа в фоне", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF4F6FC))
-                                        Text("батарея", fontSize = 12.sp, color = Color(0xFFC3CADF))
-                                    }
-                                }
-                            }
                         }
+                        Spacer(modifier = Modifier.height(12.dp))
                     }
+
 
                     // ----- ВРЕМЯ ЦИКЛА -----
                     GlassLabel("ВРЕМЯ ЦИКЛА")
@@ -682,7 +665,8 @@ fun MainScreen(
                         }
                     }
 
-                    if (isOverlayGranted && isAccessibilityEnabledInSystem) {
+                    // Плавающая кнопка: overlay + accessibility (система или уже подключён)
+                    if (isOverlayGranted && (isAccessibilityEnabledInSystem || isAccessibilityConnected)) {
                         Spacer(modifier = Modifier.height(12.dp))
                         BlackHoleWebButton(
                             onClick = onLaunchOverlayService,
