@@ -364,13 +364,6 @@ class SmartConfigManager private constructor(private val context: Context) {
 
             for (rule in config.rules) {
                 var ruleHasUsable = false
-                // Свайп без картинок — валидное правило
-                if (rule.action == "swipe" && rule.allImages.isEmpty()
-                    && rule.swipeFromX != null && rule.swipeToX != null
-                ) {
-                    ruleHasUsable = true
-                    templatesPrepared++ // условно: жест настроен
-                }
                 for (img in rule.allImages) {
                     val targetFileName = if (!img.file.isNullOrEmpty()) {
                         File(img.file).name

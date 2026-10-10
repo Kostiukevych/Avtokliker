@@ -68,7 +68,6 @@ import com.example.autoclicker.data.ClickerSettings
 import com.example.autoclicker.data.SettingsRepository
 import com.example.autoclicker.data.SmartConfigManager
 import com.example.autoclicker.data.SmartConfigMode
-import com.example.autoclicker.data.SwipeAction
 import com.example.autoclicker.engine.CycleStatus
 import com.example.autoclicker.ui.theme.AccentAmber
 import com.example.autoclicker.ui.theme.AccentGreen
@@ -81,7 +80,6 @@ import com.example.autoclicker.ui.theme.GlassDialog
 import com.example.autoclicker.ui.theme.GlassLabel
 import com.example.autoclicker.ui.theme.GlassMenuPanel
 import com.example.autoclicker.ui.theme.GlassPanel
-import com.example.autoclicker.ui.theme.GlassPointButton
 import com.example.autoclicker.ui.theme.GlassSlider
 import com.example.autoclicker.ui.theme.GlassSquareButton
 import com.example.autoclicker.ui.theme.GlassSwitch
@@ -116,29 +114,15 @@ fun MainScreen(
     onLaunchOverlayService: () -> Unit,
     onStartCycle: () -> Unit,
     onStopCycle: () -> Unit,
-    onTestClick: (Int) -> Unit,
-    onUpdatePointConfig: (Int, Boolean, Int, Int) -> Unit,
-    onUpdateCycleDelay: (Int) -> Unit,
     onUpdateSmartMode: (Boolean) -> Unit = {},
-    onUpdateRunPoints: (Boolean) -> Unit = {},
-    onUpdateRunSwipes: (Boolean) -> Unit = {},
     onUpdateRunSmart: (Boolean) -> Unit = {},
-    onUpdateFirstCycleAllPoints: (Boolean) -> Unit = {},
-    onResetPoint: (Int) -> Unit = {},
-    onResetAllPoints: () -> Unit = {},
-    onResetSwipe: (Int) -> Unit = {},
-    onResetAllSwipes: () -> Unit = {},
     onDeleteAllMacros: () -> Unit = {},
     onResetSmartMode: () -> Unit = {},
-    onResetCycleDelay: () -> Unit = {},
     onResetNeonBrightness: () -> Unit = {},
     onResetActions: () -> Unit = {},
     onResetAll: () -> Unit = {},
     onDeleteAllCustomConfigs: () -> Unit = {},
     onUpdateDebugScreenshots: (Boolean) -> Unit = {},
-    onUpdateSwipesMasterEnabled: (Boolean) -> Unit = {},
-    onUpdateSwipeConfig: (Int, Boolean, Long, Int) -> Unit = { _, _, _, _ -> },
-    onTestSwipe: (Int) -> Unit = {},
     isMacroRunning: Boolean = false,
     onStartMacro: () -> Unit = {},
     onStopMacro: () -> Unit = {},
@@ -159,14 +143,11 @@ fun MainScreen(
     val neonBriFraction = neonBrightness / 100f
 
     // Состояния диалогов настроек
-    var editingPointId by remember { mutableStateOf<Int?>(null) }
-    var editingSwipeId by remember { mutableStateOf<Int?>(null) }
     var isMacroDialogVisible by remember { mutableStateOf(false) }
     var confirmDialogState by remember { mutableStateOf<Triple<String, String, () -> Unit>?>(null) }
 
     // Выпадающее меню под бургером
     var isMenuOpen by remember { mutableStateOf(false) }
-    var orderDialogItem by remember { mutableStateOf<String?>(null) }
     var burgerRect by remember { mutableStateOf<Rect?>(null) }
 
     // Состояние конфигов
@@ -218,7 +199,6 @@ fun MainScreen(
             ) {
                 // ===== АКВАРИУМ (верх экрана) =====
                 LiquidReservoir(
-                    cycleDelayMinutes = settings.cycleDelayMinutes,
                     neonBrightness = neonBrightness
                 )
 
@@ -269,25 +249,6 @@ fun MainScreen(
                         Spacer(modifier = Modifier.height(12.dp))
                     }
 
-
-                    // ----- ВРЕМЯ ЦИКЛА -----
-                    GlassLabel("ВРЕМЯ ЦИКЛА")
-                    GlassSlider(
-                        value = settings.cycleDelayMinutes.toFloat(),
-                        onValueChange = { onUpdateCycleDelay(it.toInt()) },
-                        valueRange = 1f..15f,
-                        steps = 13,
-                        formattedValue = "${settings.cycleDelayMinutes} мин",
-                        icon = { ClockIcon() }
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    GlassSwitch(
-                        text = "Первый запуск: все точки",
-                        checked = settings.firstCycleAllPoints,
-                        onCheckedChange = onUpdateFirstCycleAllPoints,
-                        modifier = Modifier.testTag("first_cycle_all_points_switch")
-                    )
-
                     // ----- РЕЖИМ -----
                     GlassLabel("РЕЖИМ")
                     val isApi30 = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
@@ -328,84 +289,6 @@ fun MainScreen(
                         hueOffset = -90f
                     ) {
                         Text("Сбросить умный режим", color = AccentRed, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
-
-                    // ----- ПОИНТЫ -----
-                    GlassLabel("ПОИНТЫ (ТОЧКИ НАЖАТИЯ)")
-                    if (settings.isSmartMode) {
-                        Text(
-                            text = "Умный режим включён: точки не нажимаются",
-                            color = AccentRed,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(start = 8.dp, bottom = 6.dp)
-                        )
-                    }
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        for (rowStart in listOf(1, 6)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                for (id in rowStart..(rowStart + 4)) {
-                                    val p = settings.getPointById(id)
-                                    GlassPointButton(
-                                        id = id,
-                                        enabled = p.enabled,
-                                        onClick = { editingPointId = id },
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(10.dp))
-                    GlassButton(
-                        onClick = {
-                            confirmDialogState = Triple(
-                                "Вы уверены?",
-                                "Сбросить координаты и настройки всех 10 точек?"
-                            ) { onResetAllPoints() }
-                        },
-                        modifier = Modifier.fillMaxWidth().height(42.dp),
-                        hueOffset = -90f
-                    ) {
-                        Text("Сбросить все точки", color = AccentRed, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
-
-                    // ----- СВАЙПЫ -----
-                    GlassLabel("СВАЙПЫ")
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        for (i in 1..3) {
-                            val sw = settings.swipes.find { it.id == i }
-                            val isSwOn = sw?.enabled == true
-                            GlassButton(
-                                onClick = { editingSwipeId = i },
-                                modifier = Modifier.weight(1f),
-                                isOn = isSwOn,
-                                height = 76.dp,
-                                cornerRadius = 34.dp,
-                                hueOffset = i * 10f
-                            ) {
-                                Text("Свайп $i", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF4F6FC))
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(10.dp))
-                    GlassButton(
-                        onClick = {
-                            confirmDialogState = Triple(
-                                "Вы уверены?",
-                                "Сбросить параметры и координаты всех свайпов?"
-                            ) { onResetAllSwipes() }
-                        },
-                        modifier = Modifier.fillMaxWidth().height(42.dp),
-                        hueOffset = -90f
-                    ) {
-                        Text("Сбросить все свайпы", color = AccentRed, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     }
 
                     // ----- ЗАПИСЬ МАКРОСА -----
@@ -502,108 +385,6 @@ fun MainScreen(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // ----- ЗАПУСК И ПОРЯДОК -----
-                    GlassLabel("ЗАПУСК И ПОРЯДОК")
-                    val orderItems = remember(settings.actionOrder) {
-                        val base = settings.actionOrder.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                        val all = listOf("smart", "points", "swipes")
-                        (base + all.filter { it !in base }).distinct()
-                    }
-                    val orderLabels = mapOf("smart" to "Умный режим", "points" to "Точки", "swipes" to "Свайпы")
-                    val switchChecked = mapOf(
-                        "smart" to settings.isSmartMode,
-                        "points" to settings.runPoints,
-                        "swipes" to settings.runSwipes
-                    )
-                    val switchChange = mapOf(
-                        "smart" to onUpdateRunSmart,
-                        "points" to onUpdateRunPoints,
-                        "swipes" to onUpdateRunSwipes
-                    )
-                    val switchTags = mapOf(
-                        "smart" to "run_smart_switch",
-                        "points" to "run_points_switch",
-                        "swipes" to "run_swipes_switch"
-                    )
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        orderItems.forEachIndexed { index, key ->
-                            val enabled = switchChecked[key] == true
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .graphicsLayer { alpha = if (enabled) 1f else 0.85f },
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                GlassSwitch(
-                                    text = orderLabels[key] ?: key,
-                                    checked = enabled,
-                                    onCheckedChange = { switchChange[key]?.invoke(it) },
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .testTag(switchTags[key] ?: "")
-                                )
-                                GlassButton(
-                                    onClick = { orderDialogItem = key },
-                                    modifier = Modifier
-                                        .width(52.dp)
-                                        .graphicsLayer { alpha = if (enabled) 1f else 0.5f },
-                                    height = 44.dp,
-                                    cornerRadius = 14.dp
-                                ) {
-                                    Text(
-                                        text = "${index + 1}",
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 16.sp
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    if (orderDialogItem != null) {
-                        val item = orderDialogItem!!
-                        androidx.compose.ui.window.Dialog(onDismissRequest = { orderDialogItem = null }) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(20.dp))
-                                    .background(Color(0xFF12141C))
-                                    .padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Text(
-                                    text = "Порядок: ${orderLabels[item] ?: item}",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 16.sp
-                                )
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    listOf(1, 2, 3).forEach { pos ->
-                                        val currentPos = orderItems.indexOf(item) + 1
-                                        GlassButton(
-                                            onClick = {
-                                                settingsRepo.setActionPosition(item, pos)
-                                                orderDialogItem = null
-                                            },
-                                            modifier = Modifier.weight(1f),
-                                            height = 48.dp,
-                                            isOn = currentPos == pos,
-                                            cornerRadius = 14.dp
-                                        ) {
-                                            Text("$pos", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -664,52 +445,6 @@ fun MainScreen(
                 EventLogView(logs = logs, onClearLogs = onClearLogs)
 
                 Spacer(modifier = Modifier.navigationBarsPadding().height(20.dp))
-            }
-
-            // ===== ДИАЛОГ: ПОИНТ =====
-            if (editingPointId != null) {
-                val ptId = editingPointId!!
-                val pt = settings.getPointById(ptId)
-                GlassDialog(
-                    title = "Поинт $ptId",
-                    onDismissRequest = { editingPointId = null },
-                    onConfirm = { editingPointId = null }
-                ) {
-                    PointConfigContent(
-                        point = pt,
-                        onTestClick = { onTestClick(ptId) },
-                        onToggleEnabled = { en -> onUpdatePointConfig(ptId, en, pt.clickCount, pt.intervalSec) },
-                        onCountChange = { cnt -> onUpdatePointConfig(ptId, pt.enabled, cnt, pt.intervalSec) },
-                        onIntervalChange = { intv -> onUpdatePointConfig(ptId, pt.enabled, pt.clickCount, intv) },
-                        onResetPoint = {
-                            editingPointId = null
-                            onResetPoint(ptId)
-                        }
-                    )
-                }
-            }
-
-            // ===== ДИАЛОГ: СВАЙП =====
-            if (editingSwipeId != null) {
-                val swId = editingSwipeId!!
-                val sw = settings.swipes.find { it.id == swId } ?: SwipeAction(id = swId)
-                GlassDialog(
-                    title = "Свайп $swId",
-                    onDismissRequest = { editingSwipeId = null },
-                    onConfirm = { editingSwipeId = null }
-                ) {
-                    SingleSwipeContent(
-                        swipe = sw,
-                        onToggleEnabled = { en -> onUpdateSwipeConfig(swId, en, sw.durationMs, sw.intervalSec) },
-                        onDurationChange = { dur -> onUpdateSwipeConfig(swId, sw.enabled, dur, sw.intervalSec) },
-                        onIntervalChange = { intv -> onUpdateSwipeConfig(swId, sw.enabled, sw.durationMs, intv) },
-                        onTestSwipe = { onTestSwipe(swId) },
-                        onResetSwipe = {
-                            editingSwipeId = null
-                            onResetSwipe(swId)
-                        }
-                    )
-                }
             }
 
             // ===== ДИАЛОГ: МАКРОС =====
@@ -1188,20 +923,6 @@ fun MainScreen(
                             onClick = {
                                 confirmDialogState = Triple(
                                     "Вы уверены?",
-                                    "Сбросить время цикла на 7 минут?"
-                                ) { onResetCycleDelay() }
-                            },
-                            modifier = Modifier.fillMaxWidth().height(44.dp),
-                            cornerRadius = 22.dp,
-                            hueOffset = -90f
-                        ) {
-                            Text("Сбросить таймер цикла", color = AccentRed, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        GlassButton(
-                            onClick = {
-                                confirmDialogState = Triple(
-                                    "Вы уверены?",
                                     "Сбросить яркость неона на 85%?"
                                 ) { onResetNeonBrightness() }
                             },
@@ -1235,14 +956,14 @@ fun MainScreen(
                             onClick = {
                                 confirmDialogState = Triple(
                                     "Вы уверены?",
-                                    "Сбросить все точки, свайпы и записанный макрос?"
+                                    "Сбросить записанный макрос?"
                                 ) { onResetActions() }
                             },
                             modifier = Modifier.fillMaxWidth().height(44.dp),
                             cornerRadius = 22.dp,
                             hueOffset = -90f
                         ) {
-                            Text("Сбросить точки, свайпы и запись", color = AccentRed, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text("Сбросить запись макроса", color = AccentRed, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
                         Spacer(Modifier.height(8.dp))
                         GlassButton(

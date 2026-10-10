@@ -121,11 +121,6 @@ class MacroTest {
         assertEquals("macro_saved", settings.recordedMacro?.id)
         assertEquals(5, settings.macroRepeatCount)
         assertEquals(3, settings.macroIntervalSec)
-
-        // Проверяем, что существующие точки 1..10 и свайпы не изменились
-        assertEquals(10, settings.allPoints.size)
-        assertEquals(3, settings.swipes.size)
-
         // Очистка макроса
         repo.clearMacro()
         val afterClear = repo.getLatestSettings()

@@ -1009,9 +1009,9 @@ fun GlassSlider(
 // ---------------------------------------------------------------------------------
 @Composable
 fun LiquidReservoir(
-    cycleDelayMinutes: Int,
     neonBrightness: Int,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    cycleDelayMinutes: Int = 7
 ) {
     val hue = LocalNeonHue.current
     val clock = LocalNeonClock.current

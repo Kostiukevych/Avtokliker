@@ -15,7 +15,6 @@ import com.example.autoclicker.MainActivity
 import com.example.autoclicker.R
 import com.example.autoclicker.data.EventLogManager
 import com.example.autoclicker.data.SettingsRepository
-import com.example.autoclicker.engine.CycleController
 import com.example.autoclicker.engine.CycleStatus
 import com.example.autoclicker.engine.GestureExecutor
 import com.example.autoclicker.engine.RunCoordinator
@@ -24,22 +23,17 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.isActive
 
 /**
- * Foreground Service для устойчивой работы кликера в фоновом режиме
- * при нахождении пользователя в сторонних приложениях и полноэкранных играх.
+ * Foreground Service для устойчивой работы кликера в фоновом режиме.
  */
 class AutoClickForegroundService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private lateinit var cycleController: CycleController
     private lateinit var smartEngine: SmartEngine
-    private lateinit var swipeController: com.example.autoclicker.engine.SwipeController
     private lateinit var settingsRepo: SettingsRepository
     private lateinit var notificationManager: NotificationManager
 
@@ -48,9 +42,7 @@ class AutoClickForegroundService : Service() {
         isRunning = true
         settingsRepo = SettingsRepository.getInstance(applicationContext)
         val gestureExecutor = GestureExecutor()
-        cycleController = CycleController.getInstance(gestureExecutor, settingsRepo)
         smartEngine = SmartEngine.getInstance(applicationContext, gestureExecutor, settingsRepo)
-        swipeController = com.example.autoclicker.engine.SwipeController.getInstance(gestureExecutor, settingsRepo)
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         createNotificationChannel()
@@ -65,7 +57,6 @@ class AutoClickForegroundService : Service() {
             "SERVICE: onStartCommand " + if (intent == null) "intent=null (перезапуск системой)" else "action=${intent.action}"
         )
         if (intent == null) {
-            // Перезапуск системой: восстановить режимы, если работа была активна
             if (settingsRepo.isRunActive()) {
                 serviceScope.launch {
                     var connected = AccessibilityServiceHolder.isConnected
@@ -112,7 +103,6 @@ class AutoClickForegroundService : Service() {
             EventLogManager.TAG_AUTO_CLICKER,
             "SERVICE: приложение убрано из списка недавних (задача удалена)"
         )
-        // Не останавливаем режимы — перезапускаем сервисы
         try {
             AutoClickForegroundService.start(this)
             if (android.provider.Settings.canDrawOverlays(this)) {
@@ -144,16 +134,6 @@ class AutoClickForegroundService : Service() {
                 updateNotificationBasedOnState()
             }
         }
-        serviceScope.launch {
-            combine(
-                cycleController.status,
-                cycleController.cycleNumber,
-                cycleController.currentAction,
-                cycleController.countdownText
-            ) { _, _, _, _ ->
-                updateNotificationBasedOnState()
-            }.collect {}
-        }
     }
 
     private fun updateNotificationBasedOnState() {
@@ -162,17 +142,13 @@ class AutoClickForegroundService : Service() {
         val title = if (isSmartActive) {
             "AutoClicker: SMART"
         } else {
-            val cStatus = cycleController.status.value
-            val cycleNum = cycleController.cycleNumber.value
-            if (cycleNum > 0) "AutoClicker: ${cStatus.name} (Цикл #$cycleNum)" else "AutoClicker: ${cStatus.name}"
+            "AutoClicker: ГОТОВ"
         }
 
         val text = if (isSmartActive) {
             smartEngine.currentAction.value
         } else {
-            val countdown = cycleController.countdownText.value
-            val currentAct = cycleController.currentAction.value
-            if (countdown.isNotEmpty()) "$currentAct [$countdown]" else currentAct
+            "Нажмите СТАРТ для запуска"
         }
         updateNotification(text, title)
     }
@@ -254,7 +230,6 @@ class AutoClickForegroundService : Service() {
 
     override fun onDestroy() {
         isRunning = false
-        // Не сбрасываем флаг run_active — система могла убить сервис; режимы восстановятся
         RunCoordinator.stopAll(
             applicationContext,
             "служба AutoClickForegroundService уничтожена системой или приложением",

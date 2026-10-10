@@ -59,14 +59,6 @@ data class SmartRule(
     val tapTarget: String = "found",  // "found" или "fixed"
     val tapX: Float? = null,
     val tapY: Float? = null,
-    /** "tap" (по умолчанию) или "swipe" */
-    val action: String = "tap",
-    /** Начало свайпа в долях экрана 0..1 (для action=swipe) */
-    val swipeFromX: Float? = null,
-    val swipeFromY: Float? = null,
-    val swipeToX: Float? = null,
-    val swipeToY: Float? = null,
-    val swipeDurationMs: Long = 300L,
     val afterDelayMs: Long = 1000L,
     val refHeight: Int = 800,
     val builtin: Boolean = false,
@@ -361,11 +353,6 @@ data class SmartConfig(
                     )
                 }
 
-                val actionType = rObj.optString("action", "tap").trim().lowercase().ifEmpty { "tap" }
-                if (actionType != "tap" && actionType != "swipe") {
-                    throw IllegalArgumentException("Правило '$id': action должен быть 'tap' или 'swipe'")
-                }
-
                 val parsedImages = mutableListOf<SmartImage>()
                 if (rObj.has("images")) {
                     val arr = rObj.getJSONArray("images")
@@ -377,34 +364,8 @@ data class SmartConfig(
                     }
                 } else if (rObj.has("image")) {
                     parsedImages.add(parseImageObj(rObj.getJSONObject("image")))
-                } else if (actionType != "swipe") {
+                } else {
                     throw IllegalArgumentException("Правило '$id': отсутствует блок 'image' или 'images'")
-                }
-
-                var swipeFromX: Float? = null
-                var swipeFromY: Float? = null
-                var swipeToX: Float? = null
-                var swipeToY: Float? = null
-                var swipeDurationMs = 300L
-                if (actionType == "swipe") {
-                    if (!rObj.has("swipe")) {
-                        throw IllegalArgumentException("Правило '$id': для action=swipe нужен блок 'swipe'")
-                    }
-                    val sw = rObj.getJSONObject("swipe")
-                    val fromArr = sw.optJSONArray("from")
-                        ?: throw IllegalArgumentException("Правило '$id': swipe.from [x,y] обязателен")
-                    val toArr = sw.optJSONArray("to")
-                        ?: throw IllegalArgumentException("Правило '$id': swipe.to [x,y] обязателен")
-                    if (fromArr.length() != 2 || toArr.length() != 2) {
-                        throw IllegalArgumentException("Правило '$id': swipe.from и swipe.to должны содержать 2 числа")
-                    }
-                    swipeFromX = fromArr.getDouble(0).toFloat()
-                    swipeFromY = fromArr.getDouble(1).toFloat()
-                    swipeToX = toArr.getDouble(0).toFloat()
-                    swipeToY = toArr.getDouble(1).toFloat()
-                    validateFractions("Правило '$id': swipe.from", swipeFromX!!, swipeFromY!!)
-                    validateFractions("Правило '$id': swipe.to", swipeToX!!, swipeToY!!)
-                    swipeDurationMs = sw.optLong("durationMs", 300L).coerceIn(80L, 3000L)
                 }
 
                 // Проверка region (если задан)
@@ -427,7 +388,7 @@ data class SmartConfig(
 
                 val threshold = rObj.optDouble("threshold", 0.80).toFloat().coerceIn(0.50f, 0.99f)
 
-                // Проверка tap (для action=tap обязателен; для swipe — по желанию)
+                // Проверка tap
                 var target = "found"
                 var tapX: Float? = null
                 var tapY: Float? = null
@@ -447,7 +408,7 @@ data class SmartConfig(
                         tapX = tx
                         tapY = ty
                     }
-                } else if (actionType == "tap") {
+                } else {
                     throw IllegalArgumentException("Правило '$id': отсутствует блок 'tap'")
                 }
 
@@ -466,12 +427,6 @@ data class SmartConfig(
                         tapTarget = target,
                         tapX = tapX,
                         tapY = tapY,
-                        action = actionType,
-                        swipeFromX = swipeFromX,
-                        swipeFromY = swipeFromY,
-                        swipeToX = swipeToX,
-                        swipeToY = swipeToY,
-                        swipeDurationMs = swipeDurationMs,
                         afterDelayMs = afterDelayMs,
                         refHeight = refHeight,
                         builtin = false,

@@ -22,16 +22,14 @@ import com.example.autoclicker.data.EventLogManager
 import com.example.autoclicker.data.SettingsRepository
 import com.example.autoclicker.data.SmartConfigManager
 import com.example.autoclicker.data.SmartConfigMode
-import com.example.autoclicker.engine.CycleController
 import com.example.autoclicker.engine.MacroController
 import com.example.autoclicker.engine.SmartEngine
-import com.example.autoclicker.engine.SwipeController
 import com.example.autoclicker.ui.theme.NeonTheme
 
 /**
  * Отдельное плавающее окно настроек (TYPE_APPLICATION_OVERLAY) в стиле liquid-glass-neon.
  * Перетаскивается за заголовок, содержит кнопку «✕». Ширина не более 70% экрана.
- * Окна: Точки, Свайпы, Умный режим, Ещё (таймер, яркость и цвет неона, макрос, метки, закрыть).
+ * Окна: Умный режим, Ещё (яркость и цвет неона, макрос, закрыть).
  */
 @SuppressLint("ClickableViewAccessibility")
 class SettingsPopupWindow(
@@ -39,19 +37,13 @@ class SettingsPopupWindow(
     private val windowManager: WindowManager,
     private val settingsRepo: SettingsRepository,
     private val configManager: SmartConfigManager,
-    private val cycleController: CycleController,
     private val smartEngine: SmartEngine,
-    private val swipeController: SwipeController,
     private val macroController: MacroController,
     private val callbacks: Callbacks
 ) {
 
     interface Callbacks {
-        fun onStartPointCalibration(pointId: Int)
-        fun onStartSwipeCalibration(swipeId: Int, isStart: Boolean)
-        fun onStartJoystickCalibration(kind: Int)
         fun onOpenMainActivity()
-        fun onToggleVisualOverlay()
         fun onCloseService()
         fun onDismiss()
         fun onStartMacroRecording()
@@ -59,7 +51,7 @@ class SettingsPopupWindow(
     }
 
     enum class WindowType {
-        POINTS, SWIPES, SMART, MORE
+        SMART, MORE
     }
 
     var currentType: WindowType? = null
@@ -156,8 +148,6 @@ class SettingsPopupWindow(
             setPadding(dp(4), dp(2), dp(2), dp(8))
 
             val titleText = when (type) {
-                WindowType.POINTS -> "Точки"
-                WindowType.SWIPES -> "Свайпы"
                 WindowType.SMART -> "Умный режим"
                 WindowType.MORE -> "Ещё"
             }
@@ -233,8 +223,6 @@ class SettingsPopupWindow(
         sliders.clear()
 
         when (type) {
-            WindowType.POINTS -> populatePoints(container)
-            WindowType.SWIPES -> populateSwipes(container)
             WindowType.SMART -> populateSmartMode(container)
             WindowType.MORE -> populateMore(container)
         }
@@ -354,126 +342,6 @@ class SettingsPopupWindow(
         dialog.show()
     }
 
-    // ===== «ТОЧКИ» =====
-    private fun populatePoints(container: LinearLayout) {
-        val settings = settingsRepo.getLatestSettings()
-
-        if (settings.isSmartMode) {
-            container.addView(TextView(context).apply {
-                text = "Умный режим включён: точки не нажимаются"
-                setTextColor(Color.parseColor("#FF5252"))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                typeface = Typeface.DEFAULT_BOLD
-                setPadding(dp(4), dp(2), dp(4), dp(8))
-            })
-        }
-
-        val activePoints = settings.allPoints.filter { it.enabled }
-
-        if (activePoints.isEmpty()) {
-            container.addView(emptyText("Нет активных точек.\nВключите нужные точки в приложении."))
-        } else {
-            for (pt in activePoints) {
-                val card = card()
-                card.addView(
-                    infoRow(
-                        "Точка ${pt.id}",
-                        if (pt.isConfigured) "X=${pt.x.toInt()}  Y=${pt.y.toInt()}" else "не задана",
-                        if (pt.isConfigured) 0xFF8CFF00.toInt() else 0xFFFF5252.toInt()
-                    )
-                )
-                card.addView(
-                    twoButtons(
-                        glassButton(context, "Применить", on = true, textSp = 12f) {
-                            callbacks.onStartPointCalibration(pt.id)
-                        },
-                        glassButton(context, "Тест", hueOffset = 40f, textSp = 12f) {
-                            cycleController.testClick(pt.id)
-                        }.apply { isEnabled = pt.isConfigured }
-                    )
-                )
-                card.addView(
-                    fullButton(
-                        glassButton(context, "Сбросить точку", hueOffset = -90f, textSp = 11f) {
-                            showConfirmDialog("Вы уверены?", "Сбросить точку ${pt.id}?") {
-                                com.example.autoclicker.data.ResetManager.resetPoint(context, pt.id)
-                            }
-                        }, heightDp = 34, bottomDp = 2
-                    )
-                )
-                container.addView(card)
-            }
-        }
-
-        container.addView(
-            fullButton(
-                glassButton(context, "Сбросить все точки", hueOffset = -90f, textSp = 12f) {
-                    showConfirmDialog("Вы уверены?", "Сбросить все 10 точек?") {
-                        com.example.autoclicker.data.ResetManager.resetAllPoints(context)
-                    }
-                }, heightDp = 42, bottomDp = 4
-            )
-        )
-        container.addView(TextView(context).apply {
-            text = "Выключенные точки не показываются на экране"
-            setTextColor(0xFF90A4AE.toInt())
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            gravity = Gravity.CENTER
-            setPadding(dp(4), dp(2), dp(4), dp(8))
-        })
-    }
-
-    // ===== «СВАЙПЫ» =====
-    private fun populateSwipes(container: LinearLayout) {
-        val settings = settingsRepo.getLatestSettings()
-        val activeSwipes = settings.swipes.filter { it.enabled }
-
-        if (activeSwipes.isEmpty()) {
-            container.addView(emptyText("Нет активных свайпов.\nВключите нужные свайпы в приложении."))
-        } else {
-            for (sw in activeSwipes) {
-                val card = card()
-                card.addView(
-                    infoRow(
-                        "Свайп ${sw.id}",
-                        if (sw.isConfigured) "(${sw.startX.toInt()},${sw.startY.toInt()})→(${sw.endX.toInt()},${sw.endY.toInt()})" else "не задан",
-                        if (sw.isConfigured) 0xFF8CFF00.toInt() else 0xFFFF5252.toInt(),
-                        10f
-                    )
-                )
-                card.addView(
-                    twoButtons(
-                        glassButton(context, "Применить", on = true, textSp = 12f) {
-                            callbacks.onStartSwipeCalibration(sw.id, true)
-                        },
-                        glassButton(context, "Тест", hueOffset = 40f, textSp = 12f) {
-                            swipeController.testSwipe(sw.id)
-                        }.apply { isEnabled = sw.isConfigured }
-                    )
-                )
-                card.addView(
-                    fullButton(
-                        glassButton(context, "Сбросить свайп", hueOffset = -90f, textSp = 11f) {
-                            showConfirmDialog("Вы уверены?", "Сбросить свайп ${sw.id}?") {
-                                com.example.autoclicker.data.ResetManager.resetSwipe(context, sw.id)
-                            }
-                        }, heightDp = 34, bottomDp = 2
-                    )
-                )
-                container.addView(card)
-            }
-        }
-
-        container.addView(
-            fullButton(
-                glassButton(context, "Сбросить все свайпы", hueOffset = -90f, textSp = 12f) {
-                    showConfirmDialog("Вы уверены?", "Сбросить все свайпы?") {
-                        com.example.autoclicker.data.ResetManager.resetAllSwipes(context)
-                    }
-                }, heightDp = 42, bottomDp = 8
-            )
-        )
-    }
 
     // ===== «УМНЫЙ РЕЖИМ» =====
     private fun populateSmartMode(container: LinearLayout) {
@@ -580,186 +448,13 @@ class SettingsPopupWindow(
             setPadding(dp(8), dp(2), dp(8), dp(8))
         })
 
-        // ===== ДЖОЙСТИКИ =====
-        val joyRepo = com.example.autoclicker.data.JoystickRepository.getInstance(context)
-        val joy = joyRepo.getLatest()
-        container.addView(neonLabel(context, "ДЖОЙСТИКИ"))
-        container.addView(
-            toggle("Джойстики вместе с умным режимом", joy.masterEnabled) {
-                joyRepo.setMaster(it)
-            }
-        )
-        container.addView(
-            toggle("Автомимикрия (сценарий на всю катку)", joy.autoMimicEnabled) {
-                joyRepo.setAutoMimic(it)
-            }
-        )
-        container.addView(TextView(context).apply {
-            text = "Автомимикрия: движения по сценарию до «Продолжить», затем пауза и повтор после «Начать». Нужны поставленные J1/J2."
-            setTextColor(0xFF90A4AE.toInt())
-            textSize = 11f
-            setPadding(dp(8), dp(2), dp(8), dp(6))
-        })
-        val angles = listOf(0, 45, 90, 135, 180, 225, 270, 315)
-        val angleLabels = listOf("↑", "↗", "→", "↘", "↓", "↙", "←", "↖")
-        fun stickCard(id: Int) {
-            val st = if (id == 1) joy.stick1 else joy.stick2
-            val c = card()
-            c.addView(toggle("J$id включён", st.enabled) { en ->
-                joyRepo.updateStick(id) { it.copy(enabled = en) }
-                populateContent(WindowType.SMART)
-            })
-            c.addView(
-                infoRow(
-                    "J$id центр",
-                    if (st.isConfigured) "X=${st.x.toInt()} Y=${st.y.toInt()}" else "не задан",
-                    if (st.isConfigured) 0xFF80D8FF.toInt() else 0xFFB0BEC5.toInt()
-                )
-            )
-            val testEnabled = st.isConfigured && !com.example.autoclicker.engine.SmartEngine.getInstance(
-                context, com.example.autoclicker.engine.GestureExecutor(), settingsRepo
-            ).isRunning
-            c.addView(
-                twoButtons(
-                    glassButton(context, "Поставить", hueOffset = 20f, textSp = 11f) {
-                        callbacks.onStartJoystickCalibration(id)
-                    },
-                    glassButton(context, "Тест", hueOffset = 40f, textSp = 11f) {
-                        if (!st.isConfigured) return@glassButton
-                        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch {
-                            com.example.autoclicker.engine.JoystickController.getInstance(
-                                com.example.autoclicker.engine.GestureExecutor(), settingsRepo
-                            ).test(id)
-                        }
-                    }.apply { isEnabled = testEnabled }
-                )
-            )
-            c.addView(slider(40, 400, st.radiusPx, { "радиус $it px" }) { v ->
-                joyRepo.updateStick(id) { it.copy(radiusPx = v) }
-            })
-            c.addView(slider(30, 100, st.strength, { "сила $it%" }) { v ->
-                joyRepo.updateStick(id) { it.copy(strength = v) }
-            })
-            val modeLabel = if (st.mode == "circle") "Режим: круг" else "Режим: удержание"
-            c.addView(
-                fullButton(
-                    glassButton(context, modeLabel, hueOffset = 10f, textSp = 11f) {
-                        val next = if (st.mode == "hold") "circle" else "hold"
-                        joyRepo.updateStick(id) { it.copy(mode = next) }
-                        populateContent(WindowType.SMART)
-                    }, heightDp = 36, bottomDp = 4
-                )
-            )
-            if (st.mode == "hold") {
-                val idx = angles.indexOf(st.angleDeg).let { if (it < 0) 0 else it }
-                c.addView(
-                    fullButton(
-                        glassButton(context, "Направление: ${angleLabels[idx]}", hueOffset = 25f, textSp = 11f) {
-                            val next = angles[(idx + 1) % angles.size]
-                            joyRepo.updateStick(id) { it.copy(angleDeg = next) }
-                            populateContent(WindowType.SMART)
-                        }, heightDp = 36, bottomDp = 4
-                    )
-                )
-            } else {
-                c.addView(slider(2, 60, st.circlePeriodSec, { "$it с/оборот" }) { v ->
-                    joyRepo.updateStick(id) { it.copy(circlePeriodSec = v) }
-                })
-            }
-            c.addView(
-                fullButton(
-                    glassButton(context, "Сбросить J$id", hueOffset = -90f, textSp = 11f) {
-                        showConfirmDialog("Вы уверены?", "Сбросить J$id?") {
-                            joyRepo.resetStick(id)
-                            populateContent(WindowType.SMART)
-                        }
-                    }, heightDp = 36, bottomDp = 6
-                )
-            )
-            container.addView(c)
-        }
-        stickCard(1)
-        stickCard(2)
-        // Button B
-        val btn = joy.button
-        val bc = card()
-        bc.addView(toggle("Кнопка B включена", btn.enabled) { en ->
-            joyRepo.updateButton { it.copy(enabled = en) }
-            populateContent(WindowType.SMART)
-        })
-        bc.addView(
-            infoRow(
-                "B позиция",
-                if (btn.isConfigured) "X=${btn.x.toInt()} Y=${btn.y.toInt()}" else "не задана",
-                if (btn.isConfigured) 0xFFFF4081.toInt() else 0xFFB0BEC5.toInt()
-            )
-        )
-        bc.addView(
-            fullButton(
-                glassButton(context, "Поставить B", hueOffset = 30f, textSp = 11f) {
-                    callbacks.onStartJoystickCalibration(3)
-                }, heightDp = 36, bottomDp = 4
-            )
-        )
-        val bMode = if (btn.mode == "hold") "Режим: Удержание" else "Режим: Тап"
-        bc.addView(
-            fullButton(
-                glassButton(context, bMode, hueOffset = 15f, textSp = 11f) {
-                    val next = if (btn.mode == "tap") "hold" else "tap"
-                    joyRepo.updateButton { it.copy(mode = next) }
-                    populateContent(WindowType.SMART)
-                }, heightDp = 36, bottomDp = 4
-            )
-        )
-        if (btn.mode == "tap") {
-            bc.addView(slider(100, 5000, btn.intervalMs, { "каждые $it мс" }) { v ->
-                joyRepo.updateButton { it.copy(intervalMs = v) }
-            })
-        }
-        bc.addView(
-            fullButton(
-                glassButton(context, "Сбросить кнопку", hueOffset = -90f, textSp = 11f) {
-                    showConfirmDialog("Вы уверены?", "Сбросить кнопку B?") {
-                        joyRepo.resetButton()
-                        populateContent(WindowType.SMART)
-                    }
-                }, heightDp = 36, bottomDp = 6
-            )
-        )
-        container.addView(bc)
-        container.addView(TextView(context).apply {
-            text = "Джойстики работают только пока включён умный режим"
-            setTextColor(0xFF90A4AE.toInt())
-            textSize = 11f
-            setPadding(dp(8), dp(4), dp(8), dp(8))
-        })
-
     }
 
     // ===== «ЕЩЁ» =====
     private fun populateMore(container: LinearLayout) {
         val settings = settingsRepo.getLatestSettings()
 
-        // Таймер цикла
-        container.addView(neonLabel(context, "ВРЕМЯ ЦИКЛА"))
-        container.addView(
-            slider(1, 15, settings.cycleDelayMinutes, { "$it мин" }) { settingsRepo.updateCycleDelay(it) }
-        )
-        container.addView(
-            toggle("Первый запуск: все точки", settings.firstCycleAllPoints) {
-                settingsRepo.updateFirstCycleAllPoints(it)
-            }
-        )
-        container.addView(
-            fullButton(
-                glassButton(context, "Сбросить таймер цикла", hueOffset = -90f, textSp = 11f) {
-                    showConfirmDialog("Вы уверены?", "Сбросить таймер цикла?") {
-                        com.example.autoclicker.data.ResetManager.resetCycleDelay(context)
-                        populateContent(WindowType.MORE)
-                    }
-                }, heightDp = 36, bottomDp = 8
-            )
-        )
+
 
         // Неон: яркость и цвет
         container.addView(neonLabel(context, "ЯРКОСТЬ НЕОНА"))
@@ -1016,11 +711,6 @@ class SettingsPopupWindow(
         )
 
         // Остальное
-        container.addView(
-            fullButton(glassButton(context, "Метки точек на экране", 44f, 18f, 20f, false, 12f) {
-                callbacks.onToggleVisualOverlay()
-            })
-        )
         container.addView(
             fullButton(glassButton(context, "Открыть приложение", 44f, 18f, 40f, false, 12f) {
                 callbacks.onOpenMainActivity()

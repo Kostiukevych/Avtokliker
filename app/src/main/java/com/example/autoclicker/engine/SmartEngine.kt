@@ -70,8 +70,6 @@ class SmartEngine private constructor(
     private var engineJob: Job? = null
     private val engineMutex = Mutex()
 
-    var tapHooks: TapHooks? = null
-
     init {
         com.example.autoclicker.data.SmartConfigManager.getInstance(context).onConfigChangedListener = {
             if (isRunning) {
@@ -467,23 +465,6 @@ class SmartEngine private constructor(
                             val preparedCustomRules = CustomRuleSearch.prepareCustomRules(effectiveConfig.rules, customDir)
 
                             for (rule in effectiveConfig.rules) {
-                                // Свайп без картинки: срабатывает каждый скан (например, лента Shorts)
-                                if (!rule.builtin && rule.action == "swipe" && rule.allImages.isEmpty()
-                                    && rule.swipeFromX != null && rule.swipeFromY != null
-                                    && rule.swipeToX != null && rule.swipeToY != null
-                                ) {
-                                    match = FoundMatch(
-                                        name = rule.id,
-                                        clickX = rule.swipeFromX * screenshot.width,
-                                        clickY = rule.swipeFromY * screenshot.height,
-                                        score = 1f,
-                                        isContinue = false,
-                                        afterDelayMs = rule.afterDelayMs,
-                                        rule = rule,
-                                        scale = 1f
-                                    )
-                                    break
-                                }
 
                                 // Быстрый путь: координаты уже запомнены для этого размера экрана
                                 if (!rule.builtin) {
@@ -628,53 +609,10 @@ class SmartEngine private constructor(
                                     )
                                 }
                             }
+                            _currentAction.value = "Нажатие «${match.name}»..."
+                            _lastAction.value = "${match.name} (${finalX.toInt()}, ${finalY.toInt()})"
 
-                            val matchedRule = match.rule
-                            val isSwipe = matchedRule != null && matchedRule.action == "swipe"
-                                && matchedRule.swipeFromX != null && matchedRule.swipeFromY != null
-                                && matchedRule.swipeToX != null && matchedRule.swipeToY != null
-
-                            if (isSwipe) {
-                                val sx = matchedRule!!.swipeFromX!! * realW
-                                val sy = matchedRule.swipeFromY!! * realH
-                                val ex = matchedRule.swipeToX!! * realW
-                                val ey = matchedRule.swipeToY!! * realH
-                                val dur = matchedRule.swipeDurationMs
-                                _currentAction.value = "Свайп «${match.name}»..."
-                                _lastAction.value = "свайп ${match.name} (${sx.toInt()},${sy.toInt()})→(${ex.toInt()},${ey.toInt()})"
-                                EventLogManager.log(
-                                    EventLogManager.TAG_AUTO_CLICKER,
-                                    "SMART: свайп ${match.name} (${sx.toInt()},${sy.toInt()}) → (${ex.toInt()},${ey.toInt()}) ${dur}мс"
-                                )
-                                val swipeOk = try {
-                                    gestureExecutor.performSwipe(sx, sy, ex, ey, dur)
-                                } catch (t: Throwable) {
-                                    false
-                                }
-                                if (swipeOk) {
-                                    EventLogManager.log(
-                                        EventLogManager.TAG_AUTO_CLICKER,
-                                        "SMART: СВАЙП ВЫПОЛНЕН «${match.name}»"
-                                    )
-                                } else {
-                                    val reason = if (!AccessibilityServiceHolder.isConnected) "сервис доступности отключён" else "жест отменён системой"
-                                    EventLogManager.log(
-                                        EventLogManager.TAG_AUTO_CLICKER,
-                                        "SMART: СВАЙП НЕ ВЫПОЛНЕН «${match.name}»: $reason",
-                                        isError = true
-                                    )
-                                }
-                            } else {
-                                _currentAction.value = "Нажатие «${match.name}»..."
-                                _lastAction.value = "${match.name} (${finalX.toInt()}, ${finalY.toInt()})"
-
-                                // Фаза катки для автомимикрии джойстиков
-                                if (match.isContinue || match.name.contains("continue", ignoreCase = true)) {
-                                    JoystickMatchPhase.notifyContinueDetected()
-                                } else if (match.name.contains("start", ignoreCase = true)) {
-                                    JoystickMatchPhase.notifyStartDetected()
-                                }
-                                val tapOk = performTapWithHooks(finalX, finalY)
+                            val tapOk = performTapWithHooks(finalX, finalY)
                                 if (lastTapAtMs > 0L && System.currentTimeMillis() - lastTapAtMs < 60_000L) {
                                     EventLogManager.log(
                                         EventLogManager.TAG_AUTO_CLICKER,
@@ -699,7 +637,6 @@ class SmartEngine private constructor(
                                         isError = true
                                     )
                                 }
-                            }
 
                             val delayMs = match.afterDelayMs
                             if (delayMs > 0) {
@@ -1287,7 +1224,6 @@ class SmartEngine private constructor(
     }
 
     private suspend fun performTapWithHooks(x: Float, y: Float): Boolean {
-        tapHooks?.beforeTap(0, x, y, 1, 1)
         lastTapError = null
         val success = try {
             gestureExecutor.performTap(x, y)
@@ -1295,7 +1231,6 @@ class SmartEngine private constructor(
             lastTapError = t.message ?: t.toString()
             false
         }
-        tapHooks?.afterTap(0, x, y, success, 1, 1)
         return success
     }
 
