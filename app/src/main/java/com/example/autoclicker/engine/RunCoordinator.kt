@@ -7,12 +7,12 @@ import android.os.PowerManager
 import android.widget.Toast
 import com.example.autoclicker.data.EventLogManager
 import com.example.autoclicker.data.SettingsRepository
-import com.example.autoclicker.service.AutoClickForegroundService
 import com.example.autoclicker.service.AccessibilityServiceHolder
 import com.example.autoclicker.service.AccessibilityStatus
+import com.example.autoclicker.service.AutoClickForegroundService
 
 /**
- * Единая точка запуска и остановки режимов автокликера.
+ * Единая точка запуска и остановки умного режима.
  */
 object RunCoordinator {
 
@@ -21,7 +21,6 @@ object RunCoordinator {
 
     private var wakeLock: PowerManager.WakeLock? = null
 
-    /** Держит процессор активным, пока работают режимы (нужно разрешение WAKE_LOCK в манифесте). */
     @Synchronized
     private fun acquireWakeLock(context: Context) {
         try {
@@ -66,11 +65,17 @@ object RunCoordinator {
         val gestureExecutor = GestureExecutor()
         val smart = SmartEngine.getInstance(app, gestureExecutor, settingsRepo)
 
+        settingsRepo.setPaused(false)
+
         val s = settingsRepo.getLatestSettings()
         if (AccessibilityStatus.isEnabledInSystem(app) && !AccessibilityServiceHolder.isConnected) {
             var waited = 0
             while (!AccessibilityServiceHolder.isConnected && waited < 3000) {
-                try { Thread.sleep(200) } catch (_: InterruptedException) { break }
+                try {
+                    Thread.sleep(200)
+                } catch (_: InterruptedException) {
+                    break
+                }
                 waited += 200
             }
         }
@@ -100,6 +105,7 @@ object RunCoordinator {
                 )
             }
             acquireWakeLock(app)
+            EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "START: из плавающего окна / координатора")
         }
 
         EventLogManager.log(
@@ -118,20 +124,29 @@ object RunCoordinator {
         return StartResult(started, problems)
     }
 
-    /**
-     * Остановка всех режимов. reason попадает в журнал.
-     */
+    fun pause(context: Context) {
+        val app = context.applicationContext
+        val settingsRepo = SettingsRepository.getInstance(app)
+        val gestureExecutor = GestureExecutor()
+        EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "STOP/ПАУЗА: из плавающего окна")
+        SmartEngine.getInstance(app, gestureExecutor, settingsRepo).stop("пауза")
+        _isRunning.value = false
+        settingsRepo.setPaused(true)
+        settingsRepo.setRunActive(false)
+        releaseWakeLock()
+    }
+
     fun stopAll(context: Context, reason: String = "кнопка Стоп", clearActiveFlag: Boolean = true) {
         val app = context.applicationContext
         val settingsRepo = SettingsRepository.getInstance(app)
         val gestureExecutor = GestureExecutor()
         EventLogManager.log(EventLogManager.TAG_AUTO_CLICKER, "STOP: остановка режимов, причина: $reason")
-        MacroController.getInstance(gestureExecutor, settingsRepo).stop()
         SmartEngine.getInstance(app, gestureExecutor, settingsRepo).stop(reason)
         _isRunning.value = false
         releaseWakeLock()
         if (clearActiveFlag) {
             settingsRepo.setRunActive(false)
+            settingsRepo.setPaused(false)
         }
     }
 }

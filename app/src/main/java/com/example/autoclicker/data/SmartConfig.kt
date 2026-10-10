@@ -1,10 +1,3 @@
-package com.example.autoclicker.data
-
-import com.example.autoclicker.data.EventLogManager
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
-
 /**
  * Режим работы умного режима.
  */
@@ -412,7 +405,7 @@ data class SmartConfig(
                     throw IllegalArgumentException("Правило '$id': отсутствует блок 'tap'")
                 }
 
-                val afterDelayMs = rObj.optLong("afterDelayMs", 1000L).coerceAtLeast(100L)
+                val afterDelayMs = rObj.optLong("afterDelayMs", 1000L).coerceAtLeast(50L)
                 val primaryImg = parsedImages.firstOrNull()
 
                 rulesList.add(

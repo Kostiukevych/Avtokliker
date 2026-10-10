@@ -1,6 +1,9 @@
 package com.example.autoclicker.data
 
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.Settings
 import android.util.Log
 import java.io.File
 import java.io.FileWriter
@@ -13,11 +16,8 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
 /**
- * Файловые логи: один txt-файл на сутки (log_YYYY-MM-DD.txt) в filesDir/logs.
- * Хранятся 7 суток (сегодня и 6 предыдущих), на восьмой день самый старый файл удаляется.
- *
- * Также пишет диагностику жизни процесса: запуск процесса, «пульс» раз в 15 секунд
- * и необработанные исключения, чтобы было видно, почему работа остановилась.
+ * Файловые логи: один txt на сутки, 7 дней хранения.
+ * Шапка: версия, устройство, Android, разрешения, режим.
  */
 object LogFileManager {
 
@@ -38,16 +38,15 @@ object LogFileManager {
     }
     private var heartbeat: ScheduledExecutorService? = null
 
-    // Форматтеры используются только в потоке writer, кроме crash-обработчика (там свои копии)
     private val dayFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
     private val lineFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
 
     private var lastCleanupDay = ""
     private var sizeWarned = false
+    private var headerWrittenForDay = ""
 
     val isInitialized: Boolean get() = appContext != null
 
-    /** Вызывать один раз при старте процесса (Application.onCreate). */
     @Synchronized
     fun init(context: Context) {
         if (appContext != null) return
@@ -57,14 +56,16 @@ object LogFileManager {
         val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val wasOpen = prefs.getBoolean(KEY_SESSION_OPEN, false)
         val lastAlive = prefs.getLong(KEY_LAST_ALIVE, 0L)
-        prefs.edit().putBoolean(KEY_SESSION_OPEN, true).putLong(KEY_LAST_ALIVE, System.currentTimeMillis()).apply()
+        prefs.edit().putBoolean(KEY_SESSION_OPEN, true)
+            .putLong(KEY_LAST_ALIVE, System.currentTimeMillis()).apply()
 
+        writeHeaderIfNeeded(System.currentTimeMillis())
         append(System.currentTimeMillis(), "PROCESS", "=== Процесс приложения запущен ===", false)
         if (wasOpen && lastAlive > 0L) {
             val t = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(lastAlive))
             append(
                 System.currentTimeMillis(), "PROCESS",
-                "Прошлый процесс прекратил работу после $t (система выгрузила приложение, свайп из недавних или сбой). Работа режимов при этом остановилась.",
+                "Прошлый процесс прекратил работу после $t (система выгрузила / свайп / сбой). Возобновление, если overlay_wanted=true.",
                 true
             )
         }
@@ -73,19 +74,77 @@ object LogFileManager {
         startHeartbeat(app)
     }
 
+    private fun writeHeaderIfNeeded(timeMs: Long) {
+        val day = dayFormat.format(Date(timeMs))
+        if (day == headerWrittenForDay) return
+        headerWrittenForDay = day
+        val ctx = appContext ?: return
+        val file = fileForTime(timeMs, dayFormat) ?: return
+        if (file.exists() && file.length() > 64) return
+
+        val versionName = try {
+            ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "?"
+        } catch (_: Exception) {
+            "?"
+        }
+        val model = "${Build.MANUFACTURER} ${Build.MODEL}"
+        val androidVer = "API ${Build.VERSION.SDK_INT} (${Build.VERSION.RELEASE})"
+        val acc = try {
+            val enabled = Settings.Secure.getString(
+                ctx.contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            ) ?: ""
+            if (enabled.contains(ctx.packageName)) "ON" else "OFF"
+        } catch (_: Exception) {
+            "?"
+        }
+        val overlay = if (Settings.canDrawOverlays(ctx)) "ON" else "OFF"
+        val mode = try {
+            val s = SettingsRepository.getInstance(ctx).getLatestSettings()
+            if (s.isSmartMode) "Smart" else "Off"
+        } catch (_: Exception) {
+            "?"
+        }
+
+        val header = buildString {
+            appendLine("===== LOG HEADER =====")
+            appendLine("App version : $versionName")
+            appendLine("Device      : $model")
+            appendLine("Android     : $androidVer")
+            appendLine("Accessibility: $acc  |  Overlay: $overlay")
+            appendLine("Mode        : $mode")
+            appendLine("======================")
+        }
+        try {
+            FileWriter(file, true).use { it.write(header) }
+        } catch (_: Throwable) {
+        }
+    }
+
     private fun installCrashHandler() {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             try {
-                val sw = java.io.StringWriter()
-                throwable.printStackTrace(java.io.PrintWriter(sw))
+                val ste = throwable.stackTrace.firstOrNull {
+                    it.className.startsWith("com.example.autoclicker")
+                } ?: throwable.stackTrace.firstOrNull()
+                val location = if (ste != null) {
+                    val cls = ste.className.substringAfterLast('.')
+                    "$cls.${ste.methodName} (${ste.fileName}:${ste.lineNumber})"
+                } else "unknown"
                 val now = System.currentTimeMillis()
                 val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date(now))
+                val block = buildString {
+                    appendLine("=== ERROR === $ts | $location | Uncaught in thread ${thread.name}: ${throwable.message}")
+                    appendLine(throwable.stackTraceToString())
+                    throwable.cause?.let {
+                        appendLine("--- cause: ${it.javaClass.name}: ${it.message}")
+                        appendLine(it.stackTraceToString())
+                    }
+                }
                 val file = fileForTime(now, SimpleDateFormat("yyyy-MM-dd", Locale.US))
                 if (file != null) {
-                    FileWriter(file, true).use {
-                        it.write("$ts [CRASH] E Необработанное исключение в потоке ${thread.name}:\n${sw}\n")
-                    }
+                    FileWriter(file, true).use { it.write(block + "\n") }
                 }
             } catch (_: Throwable) {
             }
@@ -120,11 +179,11 @@ object LogFileManager {
         return File(dir, FILE_PREFIX + fmt.format(Date(timeMs)) + FILE_EXT)
     }
 
-    /** Асинхронная запись строки в файл текущих суток. Безопасно вызывать из любого потока. */
     fun append(timeMs: Long, tag: String, message: String, isError: Boolean) {
         if (appContext == null) return
         writer.execute {
             try {
+                writeHeaderIfNeeded(timeMs)
                 val file = fileForTime(timeMs, dayFormat) ?: return@execute
                 val day = dayFormat.format(Date(timeMs))
                 if (day != lastCleanupDay) {
@@ -136,7 +195,7 @@ object LogFileManager {
                     if (!sizeWarned) {
                         sizeWarned = true
                         FileWriter(file, true).use {
-                            it.write("${lineFormat.format(Date(timeMs))} [LOG] E Файл достиг лимита ${MAX_FILE_BYTES / 1024 / 1024} МБ, запись остановлена до следующих суток\n")
+                            it.write("${lineFormat.format(Date(timeMs))} [LOG] E Файл достиг лимита ${MAX_FILE_BYTES / 1024 / 1024} МБ\n")
                         }
                     }
                     return@execute
@@ -151,7 +210,6 @@ object LogFileManager {
         }
     }
 
-    /** Удаляет файлы старше 7 суток (остаются сегодня и 6 предыдущих дней). */
     fun cleanupOld() {
         val dir = logsDir() ?: return
         val cal = Calendar.getInstance()
@@ -178,7 +236,6 @@ object LogFileManager {
         }
     }
 
-    /** Файлы логов от новых к старым. */
     fun listLogFiles(): List<File> {
         val dir = logsDir() ?: return emptyList()
         return (dir.listFiles() ?: emptyArray())
@@ -186,7 +243,6 @@ object LogFileManager {
             .sortedByDescending { it.name }
     }
 
-    /** Весь текст логов, от старых суток к новым. Для большого объёма ограничивается maxChars с конца. */
     fun readAllText(maxChars: Int = Int.MAX_VALUE): String {
         flush()
         val files = listLogFiles().reversed()
@@ -206,7 +262,6 @@ object LogFileManager {
 
     fun totalSizeBytes(): Long = listLogFiles().sumOf { it.length() }
 
-    /** Ждёт, пока все поставленные в очередь записи попадут в файл. */
     fun flush() {
         try {
             writer.submit(Runnable { }).get(2, TimeUnit.SECONDS)
@@ -214,9 +269,9 @@ object LogFileManager {
         }
     }
 
-    /** Удаляет все файлы логов. */
     fun clearAll() {
         flush()
         listLogFiles().forEach { it.delete() }
+        headerWrittenForDay = ""
     }
 }

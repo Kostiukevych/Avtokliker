@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Репозиторий хранения настроек в SharedPreferences.
+ * Только умный режим: без макросов и отложенного старта.
  */
 class SettingsRepository(val context: Context) {
 
@@ -24,29 +25,15 @@ class SettingsRepository(val context: Context) {
         val overlayY = prefs.getInt(KEY_OVERLAY_Y, 150)
         val isSmartMode = prefs.getBoolean(KEY_SMART_MODE, true)
         val isDebugScreenshots = prefs.getBoolean(KEY_DEBUG_SCREENSHOTS, false)
-
-        val macroJson = prefs.getString(KEY_MACRO_JSON, null)
-        val recordedMacro = RecordedMacro.fromJson(macroJson)
-        val macroRepeatCount = prefs.getInt(KEY_MACRO_REPEAT_COUNT, 1)
-        val macroIntervalSec = prefs.getInt(KEY_MACRO_INTERVAL_SEC, 0)
         val neonBrightness = prefs.getInt(KEY_NEON_BRIGHTNESS, 85)
         com.example.autoclicker.ui.theme.NeonTheme.brightness = neonBrightness / 100f
-        val scheduleEnabled = prefs.getBoolean(KEY_SCHEDULE_ENABLED, false)
-        val scheduleAtEpochMs = prefs.getLong(KEY_SCHEDULE_AT, 0L)
-        val scheduleTarget = prefs.getString(KEY_SCHEDULE_TARGET, "all") ?: "all"
 
         return ClickerSettings(
             overlayX = overlayX,
             overlayY = overlayY,
             isSmartMode = isSmartMode,
             isDebugScreenshots = isDebugScreenshots,
-            recordedMacro = recordedMacro,
-            macroRepeatCount = macroRepeatCount,
-            macroIntervalSec = macroIntervalSec,
-            neonBrightness = neonBrightness,
-            scheduleEnabled = scheduleEnabled,
-            scheduleAtEpochMs = scheduleAtEpochMs,
-            scheduleTarget = scheduleTarget
+            neonBrightness = neonBrightness
         )
     }
 
@@ -72,54 +59,23 @@ class SettingsRepository(val context: Context) {
         _settings.value = loadSettings()
     }
 
-    fun saveMacro(macro: RecordedMacro) {
-        prefs.edit()
-            .putString(KEY_MACRO_JSON, macro.toJson())
-            .apply()
-        _settings.value = loadSettings()
-    }
-
-    fun clearMacro() {
-        prefs.edit()
-            .remove(KEY_MACRO_JSON)
-            .apply()
-        _settings.value = loadSettings()
-    }
-
-    fun updateMacroConfig(repeatCount: Int, intervalSec: Int) {
-        prefs.edit()
-            .putInt(KEY_MACRO_REPEAT_COUNT, repeatCount.coerceIn(0, 999))
-            .putInt(KEY_MACRO_INTERVAL_SEC, intervalSec.coerceIn(0, 300))
-            .apply()
-        _settings.value = loadSettings()
-    }
-
-    fun updateSchedule(enabled: Boolean, atEpochMs: Long, target: String = "all") {
-        prefs.edit()
-            .putBoolean(KEY_SCHEDULE_ENABLED, enabled)
-            .putLong(KEY_SCHEDULE_AT, if (enabled) atEpochMs else 0L)
-            .putString(KEY_SCHEDULE_TARGET, target)
-            .apply()
-        _settings.value = loadSettings()
-        try {
-            if (enabled && atEpochMs > 0L) {
-                com.example.autoclicker.service.ScheduleManager.schedule(context, atEpochMs)
-            } else {
-                com.example.autoclicker.service.ScheduleManager.cancel(context)
-            }
-        } catch (_: Exception) {
-        }
-    }
-
-    fun clearSchedule() {
-        updateSchedule(false, 0L, "all")
-    }
-
     fun setRunActive(active: Boolean) {
         prefs.edit().putBoolean(KEY_RUN_ACTIVE, active).apply()
     }
 
     fun isRunActive(): Boolean = prefs.getBoolean(KEY_RUN_ACTIVE, false)
+
+    fun setPaused(paused: Boolean) {
+        prefs.edit().putBoolean(KEY_PAUSED, paused).apply()
+    }
+
+    fun isPaused(): Boolean = prefs.getBoolean(KEY_PAUSED, false)
+
+    fun setOverlayWanted(wanted: Boolean) {
+        prefs.edit().putBoolean(KEY_OVERLAY_WANTED, wanted).apply()
+    }
+
+    fun isOverlayWanted(): Boolean = prefs.getBoolean(KEY_OVERLAY_WANTED, false)
 
     fun updateNeonBrightness(brightness: Int) {
         val b = brightness.coerceIn(0, 100)
@@ -133,9 +89,6 @@ class SettingsRepository(val context: Context) {
         _settings.value = loadSettings()
     }
 
-    // ---------- Сбросы ----------
-
-    /** Сброс флагов умного режима (режим и выбор конфига сбрасывает ResetManager). */
     fun resetSmartFlags() {
         prefs.edit()
             .remove(KEY_SMART_MODE)
@@ -155,20 +108,13 @@ class SettingsRepository(val context: Context) {
     companion object {
         private const val PREFS_NAME = "auto_clicker_prefs"
         private const val KEY_NEON_BRIGHTNESS = "neon_brightness"
-
         private const val KEY_OVERLAY_X = "overlay_x"
         private const val KEY_OVERLAY_Y = "overlay_y"
-
         private const val KEY_SMART_MODE = "is_smart_mode"
         private const val KEY_DEBUG_SCREENSHOTS = "is_debug_screenshots"
-        private const val KEY_SCHEDULE_ENABLED = "schedule_enabled"
-        private const val KEY_SCHEDULE_AT = "schedule_at_epoch_ms"
-        private const val KEY_SCHEDULE_TARGET = "schedule_target"
         private const val KEY_RUN_ACTIVE = "run_active"
-
-        private const val KEY_MACRO_JSON = "macro_json"
-        private const val KEY_MACRO_REPEAT_COUNT = "macro_repeat_count"
-        private const val KEY_MACRO_INTERVAL_SEC = "macro_interval_sec"
+        private const val KEY_PAUSED = "run_paused"
+        private const val KEY_OVERLAY_WANTED = "overlay_wanted"
 
         @Volatile
         private var INSTANCE: SettingsRepository? = null

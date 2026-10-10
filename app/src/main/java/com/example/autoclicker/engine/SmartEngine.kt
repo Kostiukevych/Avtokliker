@@ -105,7 +105,6 @@ class SmartEngine private constructor(
     val isRunning: Boolean
         get() = _status.value != CycleStatus.STOPPED && engineJob?.isActive == true
 
-    // Диагностика: причина завершения цикла и счётчики для heartbeat
     @Volatile
     private var endReason: String? = null
     private var scanCount = 0L
@@ -115,10 +114,6 @@ class SmartEngine private constructor(
     private var lastTapError: String? = null
     private var scanMissStreak = 0
 
-    // used as default afterDelayMs for color matches
-    // companion also defines for external clarity
-
-    /** Кэш координат: после первого нахождения кнопки тапаем сюда без долгого поиска */
     private data class CachedCoord(
         val x: Float,
         val y: Float,
@@ -137,7 +132,6 @@ class SmartEngine private constructor(
     private val variantBuildCache = HashMap<String, TemplateVariant>()
     private var lastYellowRejectLogMs = 0L
 
-
     private fun callerInfo(): String {
         return try {
             Throwable().stackTrace
@@ -150,16 +144,13 @@ class SmartEngine private constructor(
     }
 
     enum class SmartState {
-        LOBBY_SEARCH_START,       // В лобби, поиск кнопки «НАЧАТЬ»
-        WAITING_MATCH_START,      // «НАЧАТЬ» нажата, ожидание подбора/загрузки матча
-        IN_MATCH_SEARCH_CONTINUE, // Матч идет, поиск кнопки «ПРОДОЛЖИТЬ» после катки
-        POST_MATCH_TAP_CONTINUE   // Нажатие серии «ПРОДОЛЖИТЬ» (MVP -> статистика -> лобби)
+        LOBBY_SEARCH_START,
+        WAITING_MATCH_START,
+        IN_MATCH_SEARCH_CONTINUE,
+        POST_MATCH_TAP_CONTINUE
     }
 
-    // Кеш оригинальных шаблонов из assets
     private var rawTemplates: List<RawTemplate>? = null
-
-    // Кеш масштабированных и подготовленных для конкретного разрешения шаблонов (5 масштабов)
     private var cachedScreenWidth = 0
     private var cachedScreenHeight = 0
     private var precomputedTemplates: List<PrecomputedMultiScaleTemplate>? = null
@@ -190,7 +181,7 @@ class SmartEngine private constructor(
         val clickY: Float,
         val score: Float,
         val isContinue: Boolean,
-        val afterDelayMs: Long = 200L,
+        val afterDelayMs: Long = 50L,
         val rule: com.example.autoclicker.data.SmartRule? = null,
         val scale: Float = 0f,
         val source: String = "изображение"
@@ -448,10 +439,8 @@ class SmartEngine private constructor(
                             saveDebugScreenshot(screenshot)
                         }
 
-                        // Поиск кандидатов в порядке приоритета
                         var match: FoundMatch? = null
 
-                        // Если есть встроенное правило "start", проверяем желтую кнопку лобби
                         if (hasBuiltin && effectiveConfig.rules.any { it.builtin && it.id == "start" }) {
                             val yellowStart = detectYellowButton(screenshot, 0.0f, 0.42f, 0.65f, 1.0f, "start_yellow", false)
                             if (yellowStart != null && yellowStart.score >= 0.78f) {
@@ -459,19 +448,15 @@ class SmartEngine private constructor(
                             }
                         }
 
-                        // Проверяем шаблоны по правилам
                         if (match == null) {
                             val customDir = effectiveConfig.rules.firstOrNull { !it.builtin }?.configDir
                             val preparedCustomRules = CustomRuleSearch.prepareCustomRules(effectiveConfig.rules, customDir)
 
                             for (rule in effectiveConfig.rules) {
-
-                                // Быстрый путь: координаты уже запомнены для этого размера экрана
                                 if (!rule.builtin) {
                                     val cached = coordCache[rule.id]
                                     if (cached != null && cached.screenW == realW && cached.screenH == realH) {
                                         cached.useCount++
-                                        // Полный перепоиск каждый 5-й раз, чтобы не «залипнуть»
                                         if (cached.useCount % 5 != 0) {
                                             consecutiveNoMatchCount[rule.id] = 0
                                             val sx = if (realW > 0) screenshot.width.toFloat() / realW else 1f
@@ -557,7 +542,6 @@ class SmartEngine private constructor(
                             }
                         }
 
-                        // Если есть встроенные правила "continue", проверяем цвета
                         if (match == null && hasBuiltin && effectiveConfig.rules.any { it.builtin && it.id.startsWith("continue") }) {
                             val blueContinue = detectBlueButton(screenshot, 0.50f, 1.0f, 0.65f, 1.0f, "continue_blue_color", true)
                             if (blueContinue != null && blueContinue.score >= 0.78f) {
@@ -580,7 +564,6 @@ class SmartEngine private constructor(
                             val finalX = match.clickX * scaleX
                             val finalY = match.clickY * scaleY
 
-                            // Запоминаем координаты для быстрого тапа на этом размере экрана
                             val cacheKey = match.rule?.id ?: match.name
                             coordCache[cacheKey] = CachedCoord(finalX, finalY, realW, realH)
 
@@ -613,30 +596,24 @@ class SmartEngine private constructor(
                             _lastAction.value = "${match.name} (${finalX.toInt()}, ${finalY.toInt()})"
 
                             val tapOk = performTapWithHooks(finalX, finalY)
-                                if (lastTapAtMs > 0L && System.currentTimeMillis() - lastTapAtMs < 60_000L) {
-                                    EventLogManager.log(
-                                        EventLogManager.TAG_AUTO_CLICKER,
-                                        "SMART: интервал с прошлого нажатия: ${System.currentTimeMillis() - lastTapAtMs} мс"
-                                    )
+                            lastTapAtMs = System.currentTimeMillis()
+                            if (tapOk) {
+                                EventLogManager.log(
+                                    EventLogManager.TAG_AUTO_CLICKER,
+                                    "SMART: НАЖАТИЕ ВЫПОЛНЕНО «${match.name}» в (${finalX.toInt()}, ${finalY.toInt()}): жест принят системой"
+                                )
+                            } else {
+                                val reason = when {
+                                    !AccessibilityServiceHolder.isConnected -> "сервис доступности отключён"
+                                    lastTapError != null -> "ошибка жеста: $lastTapError"
+                                    else -> "жест отменён системой (dispatchGesture вернул cancelled)"
                                 }
-                                lastTapAtMs = System.currentTimeMillis()
-                                if (tapOk) {
-                                    EventLogManager.log(
-                                        EventLogManager.TAG_AUTO_CLICKER,
-                                        "SMART: НАЖАТИЕ ВЫПОЛНЕНО «${match.name}» в (${finalX.toInt()}, ${finalY.toInt()}): жест принят системой"
-                                    )
-                                } else {
-                                    val reason = when {
-                                        !AccessibilityServiceHolder.isConnected -> "сервис доступности отключён"
-                                        lastTapError != null -> "ошибка жеста: $lastTapError"
-                                        else -> "жест отменён системой (dispatchGesture вернул cancelled)"
-                                    }
-                                    EventLogManager.log(
-                                        EventLogManager.TAG_AUTO_CLICKER,
-                                        "SMART: НАЖАТИЕ НЕ ВЫПОЛНЕНО «${match.name}» в (${finalX.toInt()}, ${finalY.toInt()}): $reason",
-                                        isError = true
-                                    )
-                                }
+                                EventLogManager.log(
+                                    EventLogManager.TAG_AUTO_CLICKER,
+                                    "SMART: НАЖАТИЕ НЕ ВЫПОЛНЕНО «${match.name}» в (${finalX.toInt()}, ${finalY.toInt()}): $reason",
+                                    isError = true
+                                )
+                            }
 
                             val delayMs = match.afterDelayMs
                             if (delayMs > 0) {
@@ -655,8 +632,6 @@ class SmartEngine private constructor(
                                 }
                             }
                         } else {
-                            // Идёт матч или экран не распознан: режим НЕ останавливается сам,
-                            // только пишет предупреждение раз в idleTimeoutMin минут.
                             val nowIdle = System.currentTimeMillis()
                             if (nowIdle - lastMatchTime >= idleTimeoutMs && nowIdle - lastIdleWarnTime >= idleTimeoutMs) {
                                 lastIdleWarnTime = nowIdle
@@ -939,7 +914,6 @@ class SmartEngine private constructor(
         return MatchEval(bestScore, bestScale, clickX, clickY)
     }
 
-
     private fun buildVariant(bmp: Bitmap, multiplier: Float, baseScale: Float): TemplateVariant {
         val scale = baseScale * multiplier
         var targetW = (bmp.width * scale).roundToInt().coerceAtLeast(4)
@@ -1006,7 +980,6 @@ class SmartEngine private constructor(
         val multiplier: Float
     )
 
-    /** 3 ступени: память → стандарт → широкий поиск. */
     private fun evalBuiltinMatchSmart(
         screenshot: Bitmap,
         ruleTemplate: RuleTemplate,
@@ -1019,7 +992,6 @@ class SmartEngine private constructor(
         val baseScale = H / rule.refHeight
         val learned = com.example.autoclicker.data.SmartLearnedStore.get(realW, realH, rule.id)
 
-        // Ступень 1: запомненное
         if (learned != null) {
             val x0 = (learned.xFrac - 0.10f).coerceIn(0f, 1f)
             val x1 = (learned.xFrac + 0.10f).coerceIn(0f, 1f)
@@ -1055,7 +1027,6 @@ class SmartEngine private constructor(
             }
         }
 
-        // Ступень 2: как сейчас
         val std = evalBuiltinMatch(screenshot, ruleTemplate)
         if (std.bestScore >= rule.threshold) {
             val mult = if (baseScale > 0f) (std.bestScale / baseScale) else 1f
@@ -1066,7 +1037,6 @@ class SmartEngine private constructor(
             return BuiltinSmartEval(std, "изображение", 2, mult)
         }
 
-        // Ступень 3: широкий поиск
         if (allowWide) {
             val tick = (wideSearchTick[rule.id] ?: 0) + 1
             wideSearchTick[rule.id] = tick
@@ -1265,10 +1235,6 @@ class SmartEngine private constructor(
         rawTemplates = templates
     }
 
-    /**
-     * Предварительный расчет шаблонов в 5 масштабах: 0.85, 0.93, 1.0, 1.07, 1.18.
-     * Не вызывает recycle() на исходных шаблонах rawTemplate.
-     */
     private fun getPrecomputedTemplates(screenWidth: Int, screenHeight: Int): List<PrecomputedMultiScaleTemplate> {
         if (precomputedTemplates != null && cachedScreenWidth == screenWidth && cachedScreenHeight == screenHeight) {
             if (rawTemplates != null && rawTemplates!!.all { !it.bitmap.isRecycled }) {
@@ -1371,9 +1337,6 @@ class SmartEngine private constructor(
         return result
     }
 
-    /**
-     * Поиск желтой кнопки «НАЧАТЬ» в лобби или желтой кнопки «ПРОДОЛЖИТЬ» по цвету и прямоугольной форме.
-     */
     private fun detectYellowButton(
         screenshot: Bitmap,
         fracX0: Float,
@@ -1410,7 +1373,6 @@ class SmartEngine private constructor(
                 val r = (p shr 16) and 0xFF
                 val g = (p shr 8) and 0xFF
                 val b = p and 0xFF
-                // Золотисто-желтый оттенок PUBG Mobile
                 if (r in 180..255 && g in 130..245 && b in 0..115 && (r - b) >= 85 && (g - b) >= 45 && r >= (g - 20)) {
                     yellowCount++
                     if (x < minX) minX = x
@@ -1440,7 +1402,7 @@ class SmartEngine private constructor(
                     val clickX = x0 + (minX + maxX) / 2f
                     val clickY = y0 + (minY + maxY) / 2f
                     val score = (0.86f + (density * 0.10f)).coerceAtMost(0.98f)
-                    return FoundMatch(name, clickX, clickY, score, isContinue, afterDelayMs = 200L, source = "цвет")
+                    return FoundMatch(name, clickX, clickY, score, isContinue, afterDelayMs = 50L, source = "цвет")
                 } else {
                     val nowR = System.currentTimeMillis()
                     if (nowR - lastYellowRejectLogMs >= 5000L) {
@@ -1475,9 +1437,6 @@ class SmartEngine private constructor(
         return null
     }
 
-    /**
-     * Поиск синей кнопки «ПРОДОЛЖИТЬ» / «В ЛОББИ» по цвету и прямоугольной форме.
-     */
     private fun detectBlueButton(
         screenshot: Bitmap,
         fracX0: Float,
@@ -1514,7 +1473,6 @@ class SmartEngine private constructor(
                 val r = (p shr 16) and 0xFF
                 val g = (p shr 8) and 0xFF
                 val b = p and 0xFF
-                // Синий оттенок кнопки продолжения PUBG
                 if (b in 150..255 && r in 0..120 && g in 80..230 && (b - r) >= 60) {
                     blueCount++
                     if (x < minX) minX = x
@@ -1544,7 +1502,7 @@ class SmartEngine private constructor(
                     val clickX = x0 + (minX + maxX) / 2f
                     val clickY = y0 + (minY + maxY) / 2f
                     val score = (0.84f + (density * 0.10f)).coerceAtMost(0.96f)
-                    return FoundMatch(name, clickX, clickY, score, isContinue, afterDelayMs = 200L, source = "цвет")
+                    return FoundMatch(name, clickX, clickY, score, isContinue, afterDelayMs = 50L, source = "цвет")
                 }
             }
         }
@@ -1755,11 +1713,6 @@ class SmartEngine private constructor(
         return Pair(bestScore, Pair(0f, 0f))
     }
 
-    /**
-     * Комплексное сканирование всех кандидатов:
-     * 1. «НАЧАТЬ» в лобби (левый нижний угол: цвет + шаблон)
-     * 2. «ПРОДОЛЖИТЬ» после катки (правый нижний угол: шаблоны continue_mvp, continue_blue + желтый/синий цвет)
-     */
     private fun scanAllCandidates(screenshot: Bitmap): CandidateScanResult {
         val templates = getPrecomputedTemplates(screenshot.width, screenshot.height)
         val tmplMvp = templates.firstOrNull { it.name == "continue_mvp" }
@@ -1768,11 +1721,9 @@ class SmartEngine private constructor(
 
         var countCandidates = 0
 
-        // 1. Поиск в левом нижнем углу («НАЧАТЬ»)
         var bestStartMatch: FoundMatch? = null
         var bestStartScore = 0f
 
-        // А) Поиск жёлтой кнопки «НАЧАТЬ» по цвету и геометрии
         val yellowStart = detectYellowButton(screenshot, 0.0f, 0.42f, 0.65f, 1.0f, "start_yellow", false)
         if (yellowStart != null && yellowStart.score >= 0.78f) {
             bestStartMatch = yellowStart
@@ -1780,7 +1731,6 @@ class SmartEngine private constructor(
             countCandidates++
         }
 
-        // Б) Шаблонный поиск «НАЧАТЬ»
         var tmplStartScore = 0f
         val startRoi = createDownsampledRoi(screenshot, 0.0f, 0.42f, 0.65f, 1.0f)
         if (startRoi != null && tmplStart != null) {
@@ -1797,11 +1747,9 @@ class SmartEngine private constructor(
             }
         }
 
-        // 2. Поиск в правом нижнем углу («ПРОДОЛЖИТЬ»)
         var bestContinueMatch: FoundMatch? = null
         var bestContinueScore = 0f
 
-        // А) Шаблоны continue_mvp и continue_blue
         var scoreMvp = 0f
         var scoreBlueTmpl = 0f
         val continueRoi = createDownsampledRoi(screenshot, 0.50f, 1.0f, 0.65f, 1.0f)
@@ -1834,7 +1782,6 @@ class SmartEngine private constructor(
             }
         }
 
-        // Б) Цветовой поиск продолжения (синяя или желтая кнопка)
         val blueContinue = detectBlueButton(screenshot, 0.50f, 1.0f, 0.65f, 1.0f, "continue_blue_color", true)
         if (blueContinue != null && blueContinue.score >= 0.78f) {
             countCandidates++
