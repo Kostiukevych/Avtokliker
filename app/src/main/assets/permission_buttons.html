@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Permission buttons — neon HUD</title>
+<style>
+  :root {
+    --red:     #ff1a2b;
+    --orange:  #ff7a12;
+    --crimson: #ff1f73;
+    --lime:    #aaff00;
+    --cyan:    #00f0ff;
+    --frame:   rgba(255, 40, 60, .9);
+    --bg: transparent;
+  }
+  * { box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; margin: 0; background: var(--bg); overflow: hidden; }
+  .perm {
+    position: relative; z-index: 50; display: flex; gap: 14px;
+    width: 100%; max-width: 100%; margin: 0; padding: 4px 2px 8px;
+    transition: opacity .35s, scale .35s;
+  }
+  .perm.gone { opacity: 0; scale: .9; pointer-events: none; }
+  .pbtn {
+    position: relative; flex: 1 1 0; min-width: 0;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    padding: 14px 10px 11px; border: 0; background: none; color: var(--red);
+    font: 700 clamp(10px, 3.1vw, 12px)/1.15 ui-monospace, "SF Mono", "Roboto Mono", Menlo, Consolas, monospace;
+    letter-spacing: .14em; text-transform: uppercase; text-align: center;
+    cursor: pointer; outline: none; overflow: visible;
+    -webkit-tap-highlight-color: transparent; user-select: none; touch-action: manipulation;
+    transition: opacity .3s, scale .3s, transform .12s;
+    animation: neon-color 6s ease-in-out infinite;
+  }
+  .pbtn.second { animation-delay: -3s; }
+  .pbtn.third { animation-delay: -1.5s; }
+  @keyframes neon-color {
+    0%, 100% { color: var(--red); } 33% { color: var(--orange); } 66% { color: var(--crimson); }
+  }
+  .pbtn::before {
+    content: ''; position: absolute; inset: 0; --l: 18px; --w: 3px;
+    background:
+      linear-gradient(var(--frame), var(--frame)) top left     / var(--l) var(--w) no-repeat,
+      linear-gradient(var(--frame), var(--frame)) top left     / var(--w) var(--l) no-repeat,
+      linear-gradient(var(--frame), var(--frame)) top right    / var(--l) var(--w) no-repeat,
+      linear-gradient(var(--frame), var(--frame)) top right    / var(--w) var(--l) no-repeat,
+      linear-gradient(var(--frame), var(--frame)) bottom left  / var(--l) var(--w) no-repeat,
+      linear-gradient(var(--frame), var(--frame)) bottom left  / var(--w) var(--l) no-repeat,
+      linear-gradient(var(--frame), var(--frame)) bottom right / var(--l) var(--w) no-repeat,
+      linear-gradient(var(--frame), var(--frame)) bottom right / var(--w) var(--l) no-repeat;
+    filter: drop-shadow(0 0 5px #ff2a3c) drop-shadow(0 0 14px #ff2a3c) drop-shadow(0 0 26px #ff2a3caa);
+    animation: frame-pulse 2.4s ease-in-out infinite; pointer-events: none;
+  }
+  @keyframes frame-pulse { 0%, 100% { opacity: .75; } 50% { opacity: 1; } }
+  .pbtn::after {
+    content: ''; position: absolute; left: 6px; right: 6px; top: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, currentColor, transparent);
+    box-shadow: 0 0 8px currentColor; opacity: 0; animation: scan 3.2s linear infinite; pointer-events: none;
+  }
+  .pbtn.second::after { animation-delay: -1.6s; }
+  @keyframes scan { 0% { top: 0; opacity: 0; } 10% { opacity: .9; } 90% { opacity: .9; } 100% { top: 100%; opacity: 0; } }
+  .pbtn svg {
+    width: 24px; height: 24px; fill: none; stroke: currentColor;
+    stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
+    filter: drop-shadow(0 0 4px currentColor) drop-shadow(0 0 9px currentColor);
+  }
+  .pbtn .ico-spin { transform-origin: 50% 50%; animation: spin 9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .pbtn .title {
+    white-space: nowrap;
+    text-shadow: 0 0 3px currentColor, 0 0 8px currentColor, 0 0 16px currentColor, 0 0 30px currentColor;
+    animation: flicker 7s infinite;
+  }
+  @keyframes flicker { 0%, 90%, 100% { opacity: 1; } 91% { opacity: .5; } 92% { opacity: 1; } 94% { opacity: .65; } 95% { opacity: 1; } }
+  .pbtn .status {
+    white-space: nowrap; font-size: .75em; letter-spacing: .2em; opacity: .75;
+    text-shadow: 0 0 6px currentColor; animation: blink 1.6s steps(2, jump-none) infinite;
+  }
+  @keyframes blink { 0%, 100% { opacity: .85; } 50% { opacity: .3; } }
+  .pbtn:active { transform: scale(.94); }
+  .fx { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+  .fx .edge {
+    position: absolute; inset: 0; --l: 18px; --w: 3px;
+    background:
+      linear-gradient(currentColor, currentColor) top left     / var(--l) var(--w) no-repeat,
+      linear-gradient(currentColor, currentColor) top left     / var(--w) var(--l) no-repeat,
+      linear-gradient(currentColor, currentColor) top right    / var(--l) var(--w) no-repeat,
+      linear-gradient(currentColor, currentColor) top right    / var(--w) var(--l) no-repeat,
+      linear-gradient(currentColor, currentColor) bottom left  / var(--l) var(--w) no-repeat,
+      linear-gradient(currentColor, currentColor) bottom left  / var(--w) var(--l) no-repeat,
+      linear-gradient(currentColor, currentColor) bottom right / var(--l) var(--w) no-repeat,
+      linear-gradient(currentColor, currentColor) bottom right / var(--w) var(--l) no-repeat;
+    filter: drop-shadow(0 0 4px currentColor); opacity: 0; transform: scale(1);
+    will-change: transform, opacity; animation: edge .55s ease-out forwards;
+  }
+  @keyframes edge {
+    0%   { transform: scale(1); opacity: var(--o, .55); }
+    100% { transform: scale(var(--sx), var(--sy)); opacity: 0; }
+  }
+  .pbtn.zap { color: var(--zc, var(--lime)) !important; }
+  .pbtn.zap::before {
+    animation: none; opacity: 1;
+    filter: drop-shadow(0 0 5px #ff2a3c) drop-shadow(0 0 12px currentColor) drop-shadow(0 0 20px currentColor);
+  }
+  .pbtn.granted { opacity: 0; scale: .7; pointer-events: none; }
+  .pbtn.hidden  { display: none; }
+  .perm.launch-only #btnAcc, .perm.launch-only #btnOvl { display: none !important; }
+  .perm.launch-only #btnLaunch { display: flex !important; }
+</style>
+</head>
+<body>
+<div class="perm" id="perm">
+  <button class="pbtn" id="btnAcc" type="button" data-perm="accessibility" aria-label="Enable Accessibility">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="9.5"/>
+      <circle cx="12" cy="7.6" r="1.4"/>
+      <path d="M7 10.2l5 1.2 5-1.2M12 11.4v3.2M9.4 18l2.6-3.4 2.6 3.4"/>
+    </svg>
+    <span class="title">Accessibility</span>
+    <span class="status">▸ нажми</span>
+  </button>
+  <button class="pbtn second" id="btnOvl" type="button" data-perm="overlay" aria-label="Enable Overlay">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3.5" y="3.5" width="12" height="12" rx="2"/>
+      <path d="M8.5 20.5h10a2 2 0 0 0 2-2v-10"/>
+      <g class="ico-spin"><circle cx="9.5" cy="9.5" r="2.2"/></g>
+    </svg>
+    <span class="title">Поверх экрана</span>
+    <span class="status">▸ нажми</span>
+  </button>
+  <button class="pbtn third" id="btnLaunch" type="button" data-perm="launch" aria-label="Open floating button">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="9.5"/>
+      <path d="M8 12h8M12 8v8"/>
+    </svg>
+    <span class="title">Плавающая кнопка</span>
+    <span class="status">▸ вызвать</span>
+  </button>
+</div>
+<script>
+(() => {
+  const wrap = document.getElementById('perm');
+  const btns = {
+    accessibility: document.getElementById('btnAcc'),
+    overlay: document.getElementById('btnOvl'),
+    launch: document.getElementById('btnLaunch')
+  };
+  const BRIDGE = { accessibility: 'requestAccessibility', overlay: 'requestOverlay', launch: 'requestLaunch' };
+  for (const [name, el] of Object.entries(btns)) {
+    el.addEventListener('click', () => {
+      try {
+        const b = window.AndroidBridge;
+        if (b && typeof b[BRIDGE[name]] === 'function') b[BRIDGE[name]]();
+      } catch (e) {}
+    });
+  }
+  const calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const ZC = ['var(--lime)', 'var(--cyan)'];
+  function edge(el, fx, color, o) {
+    const w = el.offsetWidth, h = el.offsetHeight, grow = 7;
+    const n = document.createElement('i');
+    n.className = 'edge';
+    n.style.color = color;
+    n.style.setProperty('--sx', (1 + 2 * grow / w).toFixed(3));
+    n.style.setProperty('--sy', (1 + 2 * grow / h).toFixed(3));
+    n.style.setProperty('--o', o);
+    n.addEventListener('animationend', () => n.remove(), { once: true });
+    fx.appendChild(n);
+  }
+  for (const el of Object.values(btns)) {
+    const fx = document.createElement('span');
+    fx.className = 'fx';
+    fx.setAttribute('aria-hidden', 'true');
+    el.appendChild(fx);
+    let blink = 0, endTimer = 0, t0 = 0, idx = 0;
+    const paint = () => el.style.setProperty('--zc', ZC[idx]);
+    const start = () => {
+      if (calm || el.classList.contains('granted')) return;
+      clearTimeout(endTimer); clearInterval(blink);
+      t0 = performance.now(); idx = 0; paint();
+      el.classList.add('zap');
+      blink = setInterval(() => { idx ^= 1; paint(); }, 140);
+      edge(el, fx, ZC[0], .55);
+    };
+    const stop = () => {
+      if (!el.classList.contains('zap')) return;
+      const wait = Math.max(0, 600 - (performance.now() - t0));
+      clearTimeout(endTimer);
+      endTimer = setTimeout(() => { clearInterval(blink); el.classList.remove('zap'); }, wait);
+    };
+    el.addEventListener('pointerdown', start);
+    el.addEventListener('pointerup', stop);
+    el.addEventListener('pointercancel', stop);
+    el.addEventListener('pointerleave', stop);
+  }
+  function setPermission(name, granted) {
+    const el = btns[name];
+    if (!el || name === 'launch') return; // launch never disappears
+    if (granted) {
+      el.classList.add('granted');
+      setTimeout(() => { if (el.classList.contains('granted')) el.classList.add('hidden'); update(); }, 320);
+    } else {
+      el.classList.remove('hidden', 'granted');
+      wrap.classList.remove('gone');
+      wrap.style.display = '';
+    }
+  }
+  function update() {
+    const permBtns = [btns.accessibility, btns.overlay];
+    const allGone = permBtns.every(b => b.classList.contains('hidden'));
+    // do not hide wrap if launch is visible
+    if (allGone && btns.launch.classList.contains('hidden')) {
+      wrap.classList.add('gone');
+      setTimeout(() => { if (wrap.classList.contains('gone')) wrap.style.display = 'none'; }, 380);
+    }
+  }
+  window.setPermission = setPermission;
+  window.setPermissions = (o = {}) => {
+    Object.entries(o).forEach(([k, v]) => {
+      if (k === 'showLaunch') {
+        btns.launch.style.display = v ? '' : 'none';
+        if (!v) btns.launch.classList.add('hidden'); else btns.launch.classList.remove('hidden');
+      } else if (k === 'launchOnly') {
+        wrap.classList.toggle('launch-only', !!v);
+      } else {
+        setPermission(k, !!v);
+      }
+    });
+  };
+})();
+</script>
+</body>
+</html>
